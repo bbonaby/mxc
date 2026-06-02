@@ -43,6 +43,9 @@ jobs:
         CARGO_TARGET_DIR: c:/t/target
         artifactPrefix: wxc-binaries
         workingDirectory: $(Build.SourcesDirectory)/src
+        # Explicit feature set (no --all-features): tier2_bfs must NOT ship
+        # on Win 11 25H2 (bfscfg.exe risks an OS hang).
+        cargoFeatures: hyperlight isolation_session microvm wslc
         signPattern: |
             wxc-exec.exe
             wxc-host-prep.exe
@@ -57,6 +60,7 @@ jobs:
         CARGO_TARGET_DIR: /tmp/target
         artifactPrefix: lxc-binaries
         workingDirectory: $(Build.SourcesDirectory)/src/core/lxc
+        cargoFeatures: hyperlight
         signPattern: |
           lxc-exec
           linux-test-proxy
@@ -88,28 +92,15 @@ jobs:
           isOfficialBuild: ${{ parameters.isOfficialBuild }}
           targetTriple: $(triplet)
 
-      # Explicit feature set (no --all-features): tier2_bfs must NOT ship on
-      # Win 11 25H2 (bfscfg.exe risks an OS hang).
-      - ${{ if eq(item.os, 'windows') }}:
-        - script: cargo build --locked --release --target $(triplet) --no-default-features --features "hyperlight isolation_session microvm wslc"
-          displayName: Build
-          workingDirectory: $(workingDirectory)
-      - ${{ if eq(item.os, 'linux') }}:
-        - script: cargo build --locked --release --target $(triplet) --no-default-features --features hyperlight
-          displayName: Build
-          workingDirectory: $(workingDirectory)
+      - script: cargo build --locked --release --target $(triplet) --no-default-features --features "$(cargoFeatures)"
+        displayName: Build
+        workingDirectory: $(workingDirectory)
 
       # Tests x64 only (no cross-arch execution on the host).
-      - ${{ if eq(item.os, 'windows') }}:
-        - script: cargo test --locked --release --target $(triplet) --no-default-features --features "hyperlight isolation_session microvm wslc"
-          displayName: Test
-          workingDirectory: $(workingDirectory)
-          condition: eq(variables['isX64'], 'true')
-      - ${{ if eq(item.os, 'linux') }}:
-        - script: cargo test --locked --release --target $(triplet) --no-default-features --features hyperlight
-          displayName: Test
-          workingDirectory: $(workingDirectory)
-          condition: eq(variables['isX64'], 'true')
+      - script: cargo test --locked --release --target $(triplet) --no-default-features --features "$(cargoFeatures)"
+        displayName: Test
+        workingDirectory: $(workingDirectory)
+        condition: eq(variables['isX64'], 'true')
 
       # linux_test_proxy is a separate workspace member (not a dep of lxc), so
       # the workspace-member-scoped build above doesn't pick it up. Build it
