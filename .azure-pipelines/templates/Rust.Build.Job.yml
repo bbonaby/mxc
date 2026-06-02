@@ -78,6 +78,27 @@ jobs:
       artifactBaseName: $(artifactPrefix)-$(targetTriple)
       configTomlPath: $(Build.SourcesDirectory)/.cargo/config.toml
 
+    # On official builds, declare templateContext.rust so 1ES PT injects the
+    # companion Rust workflow (toolchain install, cargo cache, SBOM emit into
+    # RustBuildEvidence artifact). Fork PRs arrive as Unofficial: 1ES strips
+    # System.AccessToken and the injected steps would fail, so the unofficial
+    # path uses plain rustup + cargo instead.
+    ${{ if eq(parameters.isOfficialBuild, true) }}:
+      templateContext:
+        rust:
+          rustToolchain:
+            toolchainFeed: https://microsoft.pkgs.visualstudio.com/Dart/_packaging/Mxc-Azure-Feed/nuget/v3/index.json
+            version: 'ms-prod-1.93'
+            additionalTargets: $(triplet)
+          workingDirectory: $(workingDirectory)
+          authenticateOptions:
+            configFile: $(configTomlPath)
+          installOptions:
+            configFile: $(configTomlPath)
+          cacheOptions:
+            enabled: true
+            enableTargetCache: true
+
     steps:
       - checkout: self
 
@@ -87,20 +108,44 @@ jobs:
         displayName: Install ARM64 toolchain
         condition: and(eq('${{ item.os }}','linux'), eq('${{ item.arch }}','arm64'))
 
-      - template: Rust.Build.Steps.yml@self
-        parameters:
-          isOfficialBuild: ${{ parameters.isOfficialBuild }}
-          targetTriple: $(triplet)
+      - ${{ if eq(parameters.isOfficialBuild, true) }}:
+        # Toolchain + cargo cache are wired by templateContext.rust above.
+        # 1ES.Build.Rust.Run runs build + test and emits the SBOM into
+        # RustBuildEvidence_<triplet>_release.
+        - task: 1ES.Build.Rust.Run@1
+          displayName: Build (1ES)
+          inputs:
+            command: build
+            profile: release
+            target: $(triplet)
+            testCondition: "eq(variables['isX64'], 'true')"
+            enableTest: $(isX64)
+            publishTestResults: false
+            enableClippy: false
+            enableCodeStyleCheck: false
+            checkAllCodeStyle: false
+            useNextest: false
+            testAllTargets: false
+            buildAllTargets: false
+            allFeatures: false
+            activatedFeatures: $(cargoFeatures)
 
-      - script: cargo build --locked --release --target $(triplet) --no-default-features --features "$(cargoFeatures)"
-        displayName: Build
-        workingDirectory: $(workingDirectory)
+      - ${{ else }}:
+        # Fork-PR / Unofficial: plain rustup + crates.io, no auth tasks.
+        - template: Rust.Build.Steps.yml@self
+          parameters:
+            isOfficialBuild: false
+            targetTriple: $(triplet)
 
-      # Tests x64 only (no cross-arch execution on the host).
-      - script: cargo test --locked --release --target $(triplet) --no-default-features --features "$(cargoFeatures)"
-        displayName: Test
-        workingDirectory: $(workingDirectory)
-        condition: eq(variables['isX64'], 'true')
+        - script: cargo build --locked --release --target $(triplet) --no-default-features --features "$(cargoFeatures)"
+          displayName: Build
+          workingDirectory: $(workingDirectory)
+
+        # Tests x64 only (no cross-arch execution on the host).
+        - script: cargo test --locked --release --target $(triplet) --no-default-features --features "$(cargoFeatures)"
+          displayName: Test
+          workingDirectory: $(workingDirectory)
+          condition: eq(variables['isX64'], 'true')
 
       # linux_test_proxy is a separate workspace member (not a dep of lxc), so
       # the workspace-member-scoped build above doesn't pick it up. Build it
