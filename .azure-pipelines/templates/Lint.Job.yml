@@ -56,8 +56,6 @@ jobs:
         displayName: cargo fmt --check
         workingDirectory: $(workingDirectory)
 
-      # No `--workspace`: on Linux we cd into src/core/lxc so clippy stays
-      # scoped to lxc + deps (avoids Windows-only crates).
       - script: cargo clippy --locked --all-targets --all-features --target $(targetTriple) --release -- -D warnings
         displayName: cargo clippy --all-features
         workingDirectory: $(workingDirectory)
