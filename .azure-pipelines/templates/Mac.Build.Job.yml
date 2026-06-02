@@ -5,11 +5,10 @@
 # Microsoft-hosted agent and publishes the binary as a pipeline artifact
 # so the Package.NpmSdk and SDK.Integration.Test stages can consume it.
 #
-# This template uses the Microsoft Rust toolchain installer (msrustup) from
-# the Azure Artifacts NuGet feed instead of the 1ES.Build.Rust.* tasks, which
-# are not available on the Microsoft-hosted macOS pool. Crate downloads still
-# go through the centralized Azure Artifacts feed (appended via
-# .azure-pipelines/.cargo/config.toml) to satisfy supply-chain security requirements.
+# Toolchain + Cargo feed setup is delegated to Rust.Build.Steps.yml, which
+# branches on isOfficialBuild between (RustInstaller with the Mxc-Azure-Feed
+# + CargoAuthenticate) for official builds and plain rustup + crates.io for
+# unofficial (fork PR) builds.
 
 parameters:
 - name: triplet
@@ -45,30 +44,13 @@ jobs:
   steps:
     - checkout: self
 
-    # Append pipeline-specific Cargo settings (centralized registry) to
-    # the workspace config so crates are pulled from the Azure Artifacts
-    # feed (supply-chain security). Authentication is provided via env var on
-    # each cargo step since 1ES.Build.Rust.Setup is not available on macOS.
-    # The append is guarded: skip if the registry block is already present
-    # (e.g., if the workspace config gains these settings in the future).
-    - script: |
-        echo "" >> "$(Build.SourcesDirectory)/.cargo/config.toml"
-        cat "$(Build.SourcesDirectory)/.azure-pipelines/.cargo/config.toml" >> "$(Build.SourcesDirectory)/.cargo/config.toml"
-      displayName: Setup Cargo Config
-
-    # Install the Microsoft Rust toolchain from the NuGet feed instead of
-    # plain rustup. This satisfies 1ES supply-chain requirements by using
-    # the same centralized feed (Mxc-Azure-Feed) as Windows/Linux builds.
-    - task: RustInstaller@1
-      inputs:
-        toolchainFeed: https://microsoft.pkgs.visualstudio.com/Dart/_packaging/Mxc-Azure-Feed/nuget/v3/index.json
-        rustVersion: 'ms-prod-1.93'
-        cratesIoFeedOverride: sparse+https://microsoft.pkgs.visualstudio.com/Dart/_packaging/Mxc-Azure-Feed/Cargo/index/
-      displayName: Install Rust toolchain
-
-    - task: CargoAuthenticate@0
-      inputs:
-        configFile: '$(Build.SourcesDirectory)/.cargo/config.toml'
+    # Toolchain + Cargo feed setup. The official path uses RustInstaller@1
+    # pointed at Mxc-Azure-Feed plus CargoAuthenticate@0; the unofficial
+    # path uses plain rustup + crates.io with no auth (works on fork PRs).
+    - template: Rust.Build.Steps.yml@self
+      parameters:
+        isOfficialBuild: ${{ parameters.isOfficialBuild }}
+        targetTriple: $(targetTriple)
 
     - script: cargo fmt --all -- --check
       displayName: Check formatting

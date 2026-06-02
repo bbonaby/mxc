@@ -55,29 +55,20 @@ jobs:
         workingDirectory: $(Build.SourcesDirectory)/src/core/lxc
       targetTriple: ${{ item.triplet }}
 
-    templateContext:
-      rust:
-        rustToolchain:
-          toolchainFeed: https://microsoft.pkgs.visualstudio.com/Dart/_packaging/Mxc-Azure-Feed/nuget/v3/index.json
-          version: 'ms-prod-1.93'
-          additionalTargets: $(targetTriple)
-        workingDirectory: $(workingDirectory)
-        cacheOptions:
-          enabled: true
-          enableTargetCache: true
+    # Lint never needs the 1ES Rust template chain: clippy/fmt don't produce
+    # ship artifacts and don't need SDL telemetry. Skip templateContext.rust
+    # entirely so the 1ES PT doesn't try to inject companion steps that
+    # require System.AccessToken (would fail on fork PRs).
 
     steps:
       - checkout: self
 
-      # Append pipeline-specific Cargo settings (registry, cross-compile linker)
-      # to the workspace config so crate downloads go through the centralized
-      # Azure Artifacts feed. Mirrors the setup in Rust.Build.Job.yml.
-      - powershell: |
-          Add-Content -Path "$(Build.SourcesDirectory)/.cargo/config.toml" -Value ("`n" + (Get-Content -Raw "$(Build.SourcesDirectory)/.azure-pipelines/.cargo/config.toml"))
-        displayName: Setup Cargo Config
-
-      - task: 1ES.Build.Rust.Setup@1
-      - task: 1ES.Build.Rust.Restore@1
+      # Toolchain setup (plain rustup, public crates.io). Lint does not vary
+      # by official/unofficial; always use the unofficial path.
+      - template: Rust.Build.Steps.yml@self
+        parameters:
+          isOfficialBuild: false
+          targetTriple: $(targetTriple)
 
       - script: cargo fmt --all -- --check
         displayName: cargo fmt --check
