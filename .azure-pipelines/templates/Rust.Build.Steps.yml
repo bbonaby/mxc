@@ -17,6 +17,9 @@ parameters:
 
 steps:
 - ${{ if eq(parameters.isOfficialBuild, true) }}:
+  # Append pipeline-specific Cargo settings (centralized registry) to
+  # the workspace config so crates are pulled from the Azure Artifacts
+  # feed (supply-chain security).
   - pwsh: |
       Add-Content -Path "$(Build.SourcesDirectory)/.cargo/config.toml" -Value ("`n" + (Get-Content -Raw "$(Build.SourcesDirectory)/.azure-pipelines/.cargo/config.toml"))
     displayName: Setup Cargo Config (Mxc-Azure-Feed)
