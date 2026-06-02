@@ -1,14 +1,10 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 #
-# Shared Rust toolchain + Cargo feed setup. Official builds use the internal
-# Mxc-Azure-Feed (requires System.AccessToken); unofficial/fork-PR builds use
-# public crates.io with no auth.
+# Official-build Rust toolchain setup: internal Mxc-Azure-Feed (requires
+# System.AccessToken). Use Rust.Build.Steps.Unofficial.yml for fork/PR builds.
 
 parameters:
-- name: isOfficialBuild
-  type: boolean
-  default: false
 - name: targetTriple
   type: string
 - name: rustVersion
@@ -16,7 +12,6 @@ parameters:
   default: 'ms-prod-1.93'
 
 steps:
-- ${{ if eq(parameters.isOfficialBuild, true) }}:
   # Append pipeline-specific Cargo settings (centralized registry) to
   # the workspace config so crates are pulled from the Azure Artifacts
   # feed (supply-chain security).
@@ -35,12 +30,3 @@ steps:
   - task: CargoAuthenticate@0
     inputs:
       configFile: '$(Build.SourcesDirectory)/.cargo/config.toml'
-
-- ${{ else }}:
-  - task: RustInstaller@1
-    displayName: Install Rust toolchain (public)
-    inputs:
-      rustVersion: ${{ parameters.rustVersion }}
-      additionalTargets: ${{ parameters.targetTriple }}
-
-

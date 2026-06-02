@@ -34,14 +34,43 @@ jobs:
     outputDirectory: $(Build.SourcesDirectory)/out
     artifactBaseName: mxc-binaries-$(targetTriple)
     workingDirectory: $(Build.SourcesDirectory)/src
+    configTomlPath: $(Build.SourcesDirectory)/.cargo/config.toml
+    # Mac builds a small subset of the workspace (the Windows-only crates
+    # would not compile on macOS). Keep these in sync with the inline clippy
+    # invocation below.
+    macPackages: 'mxc_darwin seatbelt_common wxc_common'
+
+  # On official builds, declare templateContext.rust so 1ES PT injects the
+  # companion Rust workflow (toolchain install, cargo cache, SBOM emit into
+  # RustBuildEvidence artifact). Fork PRs arrive as Unofficial and the
+  # injected steps would fail (no System.AccessToken), so the unofficial
+  # path uses plain rustup + cargo instead.
+  ${{ if eq(parameters.isOfficialBuild, true) }}:
+    templateContext:
+      rust:
+        rustToolchain:
+          toolchainFeed: https://microsoft.pkgs.visualstudio.com/Dart/_packaging/Mxc-Azure-Feed/nuget/v3/index.json
+          version: 'ms-prod-1.93'
+          additionalTargets: $(targetTriple)
+        workingDirectory: $(workingDirectory)
+        authenticateOptions:
+          configFile: $(configTomlPath)
+        installOptions:
+          configFile: $(configTomlPath)
+        cacheOptions:
+          enabled: true
+          enableTargetCache: true
 
   steps:
     - checkout: self
 
-    - template: Rust.Build.Steps.yml@self
-      parameters:
-        isOfficialBuild: ${{ parameters.isOfficialBuild }}
-        targetTriple: $(targetTriple)
+    # Install Rust toolchain first so fmt/clippy below have a cargo to use.
+    # (On official, templateContext.rust above auto-injects the toolchain
+    # install; this template ref only runs on the unofficial path.)
+    - ${{ if not(eq(parameters.isOfficialBuild, true)) }}:
+      - template: Rust.Build.Steps.Unofficial.yml@self
+        parameters:
+          targetTriple: $(targetTriple)
 
     - script: cargo fmt --all -- --check
       displayName: Check formatting
@@ -53,13 +82,35 @@ jobs:
       displayName: Clippy
       workingDirectory: $(workingDirectory)
 
-    - script: cargo build --release --target $(targetTriple) -p mxc_darwin
-      displayName: Build release
-      workingDirectory: $(workingDirectory)
+    - ${{ if eq(parameters.isOfficialBuild, true) }}:
+      # Toolchain + cargo cache are wired by templateContext.rust above.
+      # 1ES.Build.Rust.Run runs build + test and emits the SBOM into
+      # RustBuildEvidence_<triplet>_release.
+      - task: 1ES.Build.Rust.Run@1
+        displayName: Build (1ES)
+        inputs:
+          command: build
+          profile: release
+          target: $(targetTriple)
+          packages: $(macPackages)
+          enableTest: true
+          publishTestResults: false
+          enableClippy: false
+          enableCodeStyleCheck: false
+          checkAllCodeStyle: false
+          useNextest: false
+          testAllTargets: false
+          buildAllTargets: false
+          allFeatures: false
 
-    - script: cargo test --release --target $(targetTriple) -p mxc_darwin -p seatbelt_common -p wxc_common
-      displayName: Run tests
-      workingDirectory: $(workingDirectory)
+    - ${{ else }}:
+      - script: cargo build --locked --release --target $(targetTriple) -p mxc_darwin
+        displayName: Build release
+        workingDirectory: $(workingDirectory)
+
+      - script: cargo test --locked --release --target $(targetTriple) -p mxc_darwin -p seatbelt_common -p wxc_common
+        displayName: Run tests
+        workingDirectory: $(workingDirectory)
 
     # --- macOS Code Signing + Notarization (official builds only) ---
     # ESRP handles the full signing flow using Microsoft's Developer ID

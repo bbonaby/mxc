@@ -47,9 +47,8 @@ jobs:
     steps:
       - checkout: self
 
-      - template: Rust.Build.Steps.yml@self
+      - template: Rust.Build.Steps.Unofficial.yml@self
         parameters:
-          isOfficialBuild: false
           targetTriple: $(targetTriple)
 
       - script: cargo fmt --all -- --check

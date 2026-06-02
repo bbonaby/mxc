@@ -132,9 +132,8 @@ jobs:
 
       - ${{ else }}:
         # Fork-PR / Unofficial: plain rustup + crates.io, no auth tasks.
-        - template: Rust.Build.Steps.yml@self
+        - template: Rust.Build.Steps.Unofficial.yml@self
           parameters:
-            isOfficialBuild: false
             targetTriple: $(triplet)
 
         - script: cargo build --locked --release --target $(triplet) --no-default-features --features "$(cargoFeatures)"
