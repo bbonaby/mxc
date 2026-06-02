@@ -47,9 +47,11 @@ jobs:
     steps:
       - checkout: self
 
-      - template: Rust.Build.Steps.Unofficial.yml@self
-        parameters:
-          targetTriple: $(targetTriple)
+      - task: RustInstaller@1
+        displayName: Install Rust toolchain (public)
+        inputs:
+          rustVersion: 'ms-prod-1.93'
+          additionalTargets: $(targetTriple)
 
       - script: cargo fmt --all -- --check
         displayName: cargo fmt --check

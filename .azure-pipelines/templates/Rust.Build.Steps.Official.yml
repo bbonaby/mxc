@@ -1,23 +1,42 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 #
-# Official-build Rust toolchain setup: internal Mxc-Azure-Feed (requires
-# System.AccessToken). Use Rust.Build.Steps.Unofficial.yml for fork/PR builds.
+# Official-build Rust workflow: Mxc-Azure-Feed toolchain + 1ES Rust virtual
+# tasks (Setup / Restore / Run). The Run task emits the SBOM into the
+# RustBuildEvidence_<triplet>_release artifact. Use Rust.Build.Steps.Unofficial.yml
+# for fork/PR builds (which lose System.AccessToken on a public upstream).
 
 parameters:
 - name: targetTriple
   type: string
+- name: workingDirectory
+  type: string
+- name: cargoFeatures
+  type: string
+  default: ''
+- name: cargoPackages
+  type: string
+  default: ''
+- name: enableTest
+  type: string
+  default: 'true'
+- name: preBuildSteps
+  type: stepList
+  default: []
 - name: rustVersion
   type: string
   default: 'ms-prod-1.93'
 
 steps:
-  # Append pipeline-specific Cargo settings (centralized registry) to
-  # the workspace config so crates are pulled from the Azure Artifacts
-  # feed (supply-chain security).
+  # Append pipeline-specific Cargo settings (centralized registry) to the
+  # workspace config so crates are pulled from the Azure Artifacts feed
+  # (supply-chain security).
   - pwsh: |
       Add-Content -Path "$(Build.SourcesDirectory)/.cargo/config.toml" -Value ("`n" + (Get-Content -Raw "$(Build.SourcesDirectory)/.azure-pipelines/.cargo/config.toml"))
     displayName: Setup Cargo Config (Mxc-Azure-Feed)
+
+  - task: 1ES.Build.Rust.Setup@1
+    displayName: Rust Setup (1ES)
 
   - task: RustInstaller@1
     displayName: Install Rust toolchain (Mxc-Azure-Feed)
@@ -28,5 +47,33 @@ steps:
       cratesIoFeedOverride: sparse+https://microsoft.pkgs.visualstudio.com/Dart/_packaging/Mxc-Azure-Feed/Cargo/index/
 
   - task: CargoAuthenticate@0
+    displayName: Cargo Authenticate
     inputs:
       configFile: '$(Build.SourcesDirectory)/.cargo/config.toml'
+
+  - task: 1ES.Build.Rust.Restore@1
+    displayName: Rust Restore Cache (1ES)
+
+  - ${{ parameters.preBuildSteps }}
+
+  - task: 1ES.Build.Rust.Run@1
+    displayName: Build + Test (1ES)
+    inputs:
+      command: build
+      profile: release
+      target: ${{ parameters.targetTriple }}
+      enableTest: ${{ parameters.enableTest }}
+      testCondition: ${{ parameters.enableTest }}
+      publishTestResults: false
+      enableClippy: false
+      enableCodeStyleCheck: false
+      checkAllCodeStyle: false
+      useNextest: false
+      testAllTargets: false
+      buildAllTargets: false
+      allFeatures: false
+      ${{ if ne(parameters.cargoFeatures, '') }}:
+        activatedFeatures: ${{ parameters.cargoFeatures }}
+      ${{ if ne(parameters.cargoPackages, '') }}:
+        packages: ${{ parameters.cargoPackages }}
+      workingDirectory: ${{ parameters.workingDirectory }}

@@ -1,0 +1,104 @@
+# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License.
+#
+# Builds the Linux native binaries (lxc-exec, linux-test-proxy) for x64 and
+# arm64 and publishes one artifact per triplet (consumed by
+# Package_MXC_NPM_SDK).
+
+parameters:
+- name: isOfficialBuild
+  type: boolean
+  default: false
+- name: matrix
+  type: object
+  default:
+    - arch: x64
+      triplet: x86_64-unknown-linux-gnu
+    - arch: arm64
+      triplet: aarch64-unknown-linux-gnu
+
+jobs:
+- ${{ each item in parameters.matrix }}:
+  - job: 'build_${{ item.arch }}_LXC'
+    displayName: 'Build (${{ item.arch }} LXC)'
+    dependsOn: []
+    pool:
+      name: Azure-Pipelines-1ESPT-ExDShared
+      image: ubuntu-latest
+      os: linux
+
+    variables:
+      CARGO_TARGET_DIR: /tmp/target
+      targetTriple: ${{ item.triplet }}
+      targetTripleDir: $(CARGO_TARGET_DIR)/$(targetTriple)/release
+      outputDirectory: $(Build.SourcesDirectory)/out
+      artifactBaseName: lxc-binaries-$(targetTriple)
+      # Linux build is scoped to the lxc workspace at src/core/lxc to avoid
+      # pulling in Windows-only crates.
+      workingDirectory: $(Build.SourcesDirectory)/src/core/lxc
+      cargoFeatures: hyperlight
+      # Tests x64 only (no cross-arch execution on the host).
+      ${{ if eq(item.arch, 'x64') }}:
+        enableTest: 'true'
+      ${{ if eq(item.arch, 'arm64') }}:
+        enableTest: 'false'
+      signPattern: |
+        lxc-exec
+        linux-test-proxy
+
+    steps:
+      - checkout: self
+
+      # ARM64 cross-link toolchain (link time only; RustInstaller handles
+      # rustup/cargo). x64 builds compile natively and don't need this.
+      - ${{ if eq(item.arch, 'arm64') }}:
+        - script: |
+            sudo apt-get update
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+          displayName: Install ARM64 toolchain
+
+      - ${{ if eq(parameters.isOfficialBuild, true) }}:
+        - template: Rust.Build.Steps.Official.yml@self
+          parameters:
+            targetTriple: $(targetTriple)
+            workingDirectory: $(workingDirectory)
+            cargoFeatures: $(cargoFeatures)
+            enableTest: $(enableTest)
+
+      - ${{ else }}:
+        - template: Rust.Build.Steps.Unofficial.yml@self
+          parameters:
+            targetTriple: $(targetTriple)
+            workingDirectory: $(workingDirectory)
+            cargoFeatures: $(cargoFeatures)
+            enableTest: $(enableTest)
+
+      # linux_test_proxy is a separate workspace member (not a dep of lxc),
+      # so the workspace-member-scoped build above doesn't pick it up. Build
+      # it explicitly here so it lands alongside lxc-exec in the target dir
+      # and gets copied into the artifact via signPattern.
+      - script: cargo build --release --target $(targetTriple) -p linux_test_proxy --manifest-path $(Build.SourcesDirectory)/src/Cargo.toml
+        displayName: Build linux-test-proxy
+
+      - task: CopyFiles@2
+        displayName: Copy binaries
+        inputs:
+          sourceFolder: $(targetTripleDir)
+          contents: |
+            $(signPattern)
+          targetFolder: $(outputDirectory)/$(targetTriple)
+
+      - task: CopyFiles@2
+        displayName: Copy symbol files
+        inputs:
+          sourceFolder: $(targetTripleDir)
+          contents: |
+            *.pdb
+            *.dwp
+          targetFolder: $(outputDirectory)/$(targetTriple)/symbols
+
+      - task: 1ES.PublishPipelineArtifact@1
+        displayName: Publish
+        inputs:
+          path: '$(outputDirectory)/$(targetTriple)'
+          artifactName: $(artifactBaseName)

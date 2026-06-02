@@ -1,13 +1,33 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 #
-# Unofficial / fork-PR Rust toolchain setup: public crates.io, no auth tasks.
-# (Fork PRs against a public upstream lose System.AccessToken, so any task that
-# defaults its authenticationToken to $(System.AccessToken) fails at prep time.)
+# Unofficial / fork-PR Rust workflow: public crates.io, no auth tasks. Plain
+# rustup + cargo build / test. Fork PRs against a public upstream lose
+# System.AccessToken so any task that defaults its authenticationToken to
+# $(System.AccessToken) fails at prep time — that rules out 1ES.Build.Rust.*
+# and CargoAuthenticate.
+#
+# Pass exactly one of `cargoFeatures` (workspace builds, e.g. Win/Lin) or
+# `cargoPackages` (package-scoped builds, e.g. Mac). Setting both will emit
+# two builds.
 
 parameters:
 - name: targetTriple
   type: string
+- name: workingDirectory
+  type: string
+- name: cargoFeatures
+  type: string
+  default: ''
+- name: cargoPackages
+  type: string
+  default: ''
+- name: enableTest
+  type: string
+  default: 'true'
+- name: preBuildSteps
+  type: stepList
+  default: []
 - name: rustVersion
   type: string
   default: 'ms-prod-1.93'
@@ -18,3 +38,29 @@ steps:
     inputs:
       rustVersion: ${{ parameters.rustVersion }}
       additionalTargets: ${{ parameters.targetTriple }}
+
+  - ${{ parameters.preBuildSteps }}
+
+  # Features path (Win/Lin): build/test the workspace with an explicit feature
+  # set (no `--all-features`: tier2_bfs must NOT ship on Win 11 25H2).
+  - ${{ if ne(parameters.cargoFeatures, '') }}:
+    - script: cargo build --locked --release --target ${{ parameters.targetTriple }} --no-default-features --features "${{ parameters.cargoFeatures }}"
+      displayName: Build
+      workingDirectory: ${{ parameters.workingDirectory }}
+
+    - script: cargo test --locked --release --target ${{ parameters.targetTriple }} --no-default-features --features "${{ parameters.cargoFeatures }}"
+      displayName: Test
+      workingDirectory: ${{ parameters.workingDirectory }}
+      condition: eq('${{ parameters.enableTest }}', 'true')
+
+  # Packages path (Mac): build/test a specific package set (the full workspace
+  # includes Windows-only crates that don't compile on macOS).
+  - ${{ if ne(parameters.cargoPackages, '') }}:
+    - script: cargo build --locked --release --target ${{ parameters.targetTriple }} ${{ format('-p {0}', replace(parameters.cargoPackages, ' ', ' -p ')) }}
+      displayName: Build
+      workingDirectory: ${{ parameters.workingDirectory }}
+
+    - script: cargo test --locked --release --target ${{ parameters.targetTriple }} ${{ format('-p {0}', replace(parameters.cargoPackages, ' ', ' -p ')) }}
+      displayName: Test
+      workingDirectory: ${{ parameters.workingDirectory }}
+      condition: eq('${{ parameters.enableTest }}', 'true')
