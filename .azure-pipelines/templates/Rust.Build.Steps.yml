@@ -33,7 +33,7 @@ steps:
     inputs:
       configFile: '$(Build.SourcesDirectory)/.cargo/config.toml'
 
-- ${{ if not(eq(parameters.isOfficialBuild, true)) }}:
+- ${{ else }}:
   - task: RustInstaller@1
     displayName: Install Rust toolchain (public)
     inputs:
