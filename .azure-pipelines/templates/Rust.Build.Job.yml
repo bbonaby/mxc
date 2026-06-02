@@ -77,32 +77,19 @@ jobs:
     steps:
       - checkout: self
 
-      # Install Linux ARM64 toolchain for arm64 linux builds
       - script: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
         displayName: Install ARM64 toolchain
         condition: and(eq('${{ item.os }}','linux'), eq('${{ item.arch }}','arm64'))
 
-      # Toolchain + Cargo feed setup. Branches official (RustInstaller +
-      # internal Mxc-Azure-Feed + CargoAuthenticate) vs unofficial (public
-      # rustup + crates.io, no auth). See Rust.Build.Steps.yml for details.
       - template: Rust.Build.Steps.yml@self
         parameters:
           isOfficialBuild: ${{ parameters.isOfficialBuild }}
           targetTriple: $(triplet)
 
-      # --- Build (plain cargo on both paths) ---
-      #
-      # IMPORTANT: do NOT use --all-features. The `tier2_bfs` Cargo feature
-      # gates Tier 2 (BFS) and must NOT be compiled into production binaries
-      # on Win 11 25H2 (the embedded `bfscfg.exe` invocation risks an OS
-      # hang). Enumerate the production feature set explicitly so the
-      # shipped binary still carries every runtime backend except
-      # `tier2_bfs`. See `.github/workflows/build.yml`,
-      # `tests/scripts/T3-Workloads.ps1`, and
-      # `tests/scripts/Win25H2Safe-Tests.ps1` for the safety model.
-
+      # Explicit feature set (no --all-features): tier2_bfs must NOT ship on
+      # Win 11 25H2 (bfscfg.exe risks an OS hang).
       - ${{ if eq(item.os, 'windows') }}:
         - script: cargo build --locked --release --target $(triplet) --no-default-features --features "hyperlight isolation_session microvm wslc"
           displayName: Build
@@ -112,8 +99,7 @@ jobs:
           displayName: Build
           workingDirectory: $(workingDirectory)
 
-      # Tests run only on x64 (cannot execute cross-compiled arm64 binaries
-      # on x64 hosts). This matches the previous enableTest=$(isX64) gate.
+      # Tests x64 only (no cross-arch execution on the host).
       - ${{ if eq(item.os, 'windows') }}:
         - script: cargo test --locked --release --target $(triplet) --no-default-features --features "hyperlight isolation_session microvm wslc"
           displayName: Test

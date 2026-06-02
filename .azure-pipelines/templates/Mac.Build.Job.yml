@@ -2,13 +2,7 @@
 # Licensed under the MIT License.
 #
 # Builds mxc-exec-mac (the macOS sandbox executor) on an ARM64 macOS
-# Microsoft-hosted agent and publishes the binary as a pipeline artifact
-# so the Package.NpmSdk and SDK.Integration.Test stages can consume it.
-#
-# Toolchain + Cargo feed setup is delegated to Rust.Build.Steps.yml, which
-# branches on isOfficialBuild between (RustInstaller with the Mxc-Azure-Feed
-# + CargoAuthenticate) for official builds and plain rustup + crates.io for
-# unofficial (fork PR) builds.
+# Microsoft-hosted agent and publishes the binary as a pipeline artifact.
 
 parameters:
 - name: triplet
@@ -44,9 +38,6 @@ jobs:
   steps:
     - checkout: self
 
-    # Toolchain + Cargo feed setup. The official path uses RustInstaller@1
-    # pointed at Mxc-Azure-Feed plus CargoAuthenticate@0; the unofficial
-    # path uses plain rustup + crates.io with no auth (works on fork PRs).
     - template: Rust.Build.Steps.yml@self
       parameters:
         isOfficialBuild: ${{ parameters.isOfficialBuild }}
