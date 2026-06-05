@@ -1,7 +1,7 @@
 {
-  "version": "0.6.0-alpha",
+  "version": "0.4.0-alpha",
   "containerId": "CLI-Proxy-Builtin-Test",
-  "containment": "process",
+  "containment": "processcontainer",
   "process": {
     "commandLine": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"Write-Host 'Test 1: Requesting http://api.github.com via WinHTTP COM (WinHttp.WinHttpRequest.5.1)...'; try { $w = New-Object -ComObject WinHttp.WinHttpRequest.5.1; $w.SetTimeouts(10000,10000,10000,10000); $w.Open('GET','http://api.github.com',$false); $w.Send(); Write-Host ('  Status: ' + $w.Status) } catch { Write-Host ('  Error: ' + $_.Exception.Message) }; Write-Host ''; Write-Host 'Done.'\"",
     "timeout": 20000
