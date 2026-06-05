@@ -200,19 +200,12 @@ impl NetworkManager {
     pub fn start(
         &mut self,
         principal_id: &str,
-        container_name: &str,
         policy: &ContainerPolicy,
-        script_sid: windows::Win32::Security::PSID,
         logger: &mut Logger,
     ) -> Result<(), WxcError> {
         if policy.network_proxy.is_enabled() {
-            self.proxy_coordinator.start(
-                &policy.network_proxy,
-                container_name,
-                principal_id,
-                script_sid,
-                logger,
-            )?;
+            self.proxy_coordinator
+                .start(&policy.network_proxy, principal_id, logger)?;
         }
 
         if let Err(err) = self.apply_firewall_rules(principal_id, policy, logger) {

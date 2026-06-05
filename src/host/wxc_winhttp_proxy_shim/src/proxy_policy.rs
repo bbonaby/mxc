@@ -7,10 +7,12 @@
 
 //! Safe wrappers around the WinHTTP per-AppContainer proxy policy APIs.
 //!
-//! These APIs (`WinHttpConnectionSetPolicyEntries`, `WinHttpConnectionSetProxyInfo`)
+//! These APIs (`WinHttpConnectionSetPolicyEntries`,
+//! `WinHttpConnectionSetProxyInfo`, `WinHttpConnectionUpdateIfIndexTable`)
 //! are not in the public SDK or windows-rs. They are loaded at runtime from
 //! winhttp.dll via `GetProcAddress`.
 
+use std::net::{IpAddr, ToSocketAddrs};
 use std::ptr;
 
 use windows::core::PCWSTR;
@@ -25,6 +27,13 @@ use wxc_common::logger::Logger;
 use wxc_common::string_util;
 
 use crate::bindings::*;
+
+/// Loopback interface index used by `WinHttpConnectionUpdateIfIndexTable`.
+///
+/// We currently only support loopback proxies, so the route is always the
+/// loopback adapter (ifIndex 1). Matches the reference implementation in
+/// `SandboxNetworking.cpp::ApplyProxyConfiguration`.
+const LOOPBACK_IF_INDEX: u32 = 1;
 
 // Standard WinHTTP API function pointer types (public SDK, but loaded dynamically)
 const WINHTTP_ACCESS_TYPE_NO_PROXY: u32 = 1;
@@ -104,7 +113,7 @@ impl Drop for WinHttpSession {
 /// Resolved function pointers for the undocumented WinHTTP APIs.
 struct WinHttpProxyFunctions {
     set_policy: FnWinHttpConnectionSetPolicyEntries,
-    delete_policy: FnWinHttpConnectionDeletePolicyEntries,
+    update_if_index: FnWinHttpConnectionUpdateIfIndexTable,
     set_proxy: FnWinHttpConnectionSetProxyInfo,
     delete_proxy: FnWinHttpConnectionDeleteProxyInfo,
 }
@@ -122,13 +131,13 @@ impl WinHttpProxyFunctions {
                 )
             })?;
 
-            let delete_policy = GetProcAddress(
+            let update_if_index = GetProcAddress(
                 module,
-                windows::core::s!("WinHttpConnectionDeletePolicyEntries"),
+                windows::core::s!("WinHttpConnectionUpdateIfIndexTable"),
             )
             .ok_or_else(|| {
                 WxcError::NetworkProxy(
-                    "WinHttpConnectionDeletePolicyEntries not found in winhttp.dll".to_string(),
+                    "WinHttpConnectionUpdateIfIndexTable not found in winhttp.dll".to_string(),
                 )
             })?;
 
@@ -155,10 +164,10 @@ impl WinHttpProxyFunctions {
                     unsafe extern "system" fn() -> isize,
                     FnWinHttpConnectionSetPolicyEntries,
                 >(set_policy),
-                delete_policy: std::mem::transmute::<
+                update_if_index: std::mem::transmute::<
                     unsafe extern "system" fn() -> isize,
-                    FnWinHttpConnectionDeletePolicyEntries,
-                >(delete_policy),
+                    FnWinHttpConnectionUpdateIfIndexTable,
+                >(update_if_index),
                 set_proxy: std::mem::transmute::<
                     unsafe extern "system" fn() -> isize,
                     FnWinHttpConnectionSetProxyInfo,
@@ -273,6 +282,41 @@ fn set_policy_entries(
     Ok(())
 }
 
+fn update_if_index_table(
+    session: &WinHttpSession,
+    functions: &WinHttpProxyFunctions,
+    connection_guid: &str,
+    if_index: u32,
+    logger: &mut Logger,
+) -> Result<(), WxcError> {
+    let connection_guid_wide = string_util::to_wide(connection_guid);
+
+    let mut entry = WinHttpConnectionIfindexEntry {
+        pwsz_connection_name: connection_guid_wide.as_ptr(),
+        dw_if_index: if_index,
+    };
+
+    let mut list = WinHttpConnectionIfindexList {
+        n_entries: 1,
+        p_connection_ifindex_entries: &mut entry,
+    };
+
+    let result = unsafe { (functions.update_if_index)(session.as_ptr(), &mut list) };
+
+    if result != 0 {
+        return Err(WxcError::NetworkProxy(format!(
+            "WinHttpConnectionUpdateIfIndexTable failed (error {})",
+            result
+        )));
+    }
+
+    logger.log_line(&format!(
+        "Connection bound to interface index {} (loopback).",
+        if_index
+    ));
+    Ok(())
+}
+
 fn set_proxy_info(
     functions: &WinHttpProxyFunctions,
     connection_guid: &str,
@@ -328,23 +372,83 @@ fn set_proxy_info(
 /// constraint — in production the OS will manage proxy policy on behalf of
 /// the AppContainer, removing the need for elevation.
 pub struct ActiveProxyPolicy {
+    // The session handle owns the connection-policy state we set. It must
+    // outlive the policy or the DNS cache service drops the binding, so we
+    // keep it stored even though we don't read it back after setup.
+    #[allow(dead_code)]
     session: WinHttpSession,
     connection_guid: String,
     functions: WinHttpProxyFunctions,
+}
+
+/// Reject any proxy address that doesn't resolve to a loopback IP.
+///
+/// We only support loopback proxies today because:
+///   * loopback bypasses the AppContainer network isolation when the
+///     container is granted the `networkLoopback` capability, and
+///   * we always route the connection through the loopback adapter
+///     (ifIndex 1) rather than calling `GetBestInterfaceEx` for a remote
+///     proxy server.
+///
+/// Accepts an IP literal (parsed directly) or a hostname (resolved via DNS).
+fn require_loopback_proxy(proxy_address: &str) -> Result<(), WxcError> {
+    if let Ok(ip) = proxy_address.parse::<IpAddr>() {
+        if ip.is_loopback() {
+            return Ok(());
+        }
+        return Err(WxcError::NetworkProxy(format!(
+            "Proxy address '{}' is not an IPv4 or IPv6 loopback address. \
+             Only loopback proxies are supported.",
+            proxy_address
+        )));
+    }
+
+    let addrs: Vec<_> = (proxy_address, 0u16)
+        .to_socket_addrs()
+        .map_err(|err| {
+            WxcError::NetworkProxy(format!(
+                "Failed to resolve proxy host '{}': {}",
+                proxy_address, err
+            ))
+        })?
+        .collect();
+
+    if addrs.is_empty() {
+        return Err(WxcError::NetworkProxy(format!(
+            "Proxy host '{}' did not resolve to any addresses",
+            proxy_address
+        )));
+    }
+
+    if addrs.iter().all(|a| a.ip().is_loopback()) {
+        return Ok(());
+    }
+
+    Err(WxcError::NetworkProxy(format!(
+        "Proxy host '{}' resolves to a non-loopback address. \
+         Only IPv4/IPv6 loopback proxies are supported.",
+        proxy_address
+    )))
 }
 
 impl ActiveProxyPolicy {
     /// Set a per-AppContainer proxy policy.
     ///
     /// This binds the AppContainer SID to a connection GUID, then binds that
-    /// GUID to a proxy server address and port. Mirrors the Orchestrator
-    /// pattern from the networkingtest repo.
+    /// GUID to the loopback interface and a proxy server address/port.
+    /// Mirrors the Orchestrator/SandboxNetworking pattern from the WinHTTP
+    /// reference code.
+    ///
+    /// Returns an error if `proxy_address` is not an IPv4 or IPv6 loopback
+    /// address (or a hostname that resolves exclusively to loopback).
     pub fn set(
         principal_id: &str,
         proxy_address: &str,
         proxy_port: u16,
         logger: &mut Logger,
     ) -> Result<Self, WxcError> {
+        require_loopback_proxy(proxy_address)?;
+
         let dll_name = string_util::to_wide("winhttp.dll");
         let module = unsafe { LoadLibraryW(PCWSTR(dll_name.as_ptr())) }.map_err(|err| {
             WxcError::NetworkProxy(format!("Failed to load winhttp.dll: {}", err))
@@ -376,14 +480,28 @@ impl ActiveProxyPolicy {
 
         free_sid(psid);
 
-        if let Err(err) =
-            set_proxy_info(&functions, &connection_guid, &proxy_url, proxy_port, logger)
-        {
-            unsafe {
-                (functions.delete_policy)(session.as_ptr(), WinHttpConnectionPolicyTag::Wwwpt);
-            }
-            return Err(err);
-        }
+        // Bind the connection GUID to the loopback adapter so the DNS cache
+        // service routes traffic for this AppContainer through the loopback
+        // interface. Without this, the connection GUID has no interface
+        // mapping and the proxy lookup may return the wrong route.
+        // We deliberately do NOT call `WinHttpConnectionDeletePolicyEntries`
+        // to roll this back -- that API removes all policy entries for the
+        // tag (including those owned by other concurrent sandboxes) and has
+        // no per-GUID variant. The accepted trade-off is that a failure here
+        // leaves the policy entry behind; it will be ignored without a
+        // matching proxy info entry and is cleaned up at OS boot.
+        update_if_index_table(
+            &session,
+            &functions,
+            &connection_guid,
+            LOOPBACK_IF_INDEX,
+            logger,
+        )?;
+
+        // Same trade-off applies here: on failure we leave the policy entry
+        // (and now the ifindex mapping) behind rather than wiping the
+        // tag-wide state.
+        set_proxy_info(&functions, &connection_guid, &proxy_url, proxy_port, logger)?;
 
         logger.log_line(&format!(
             "Proxy policy active: {}:{} for SID {}",
@@ -398,6 +516,12 @@ impl ActiveProxyPolicy {
     }
 
     /// Remove the per-AppContainer proxy policy.
+    ///
+    /// Only the per-GUID proxy info is cleaned up. We intentionally do NOT
+    /// call `WinHttpConnectionDeletePolicyEntries`: it removes every
+    /// in-memory entry for our tag, so concurrent sandbox launches would
+    /// stomp each other's connection bindings. A per-GUID delete API does
+    /// not exist, so the policy entry is left behind for the OS to recycle.
     pub fn delete(self, logger: &mut Logger) {
         let connection_guid_wide = string_util::to_wide(&self.connection_guid);
 
@@ -414,19 +538,36 @@ impl ActiveProxyPolicy {
                     result
                 ));
             }
-
-            let result = (self.functions.delete_policy)(
-                self.session.as_ptr(),
-                WinHttpConnectionPolicyTag::Wwwpt,
-            );
-            if result == 0 {
-                logger.log_line("Policy entries deleted.");
-            } else {
-                logger.log_line(&format!(
-                    "Warning: WinHttpConnectionDeletePolicyEntries failed (error {})",
-                    result
-                ));
-            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loopback_ipv4_literal_is_accepted() {
+        assert!(require_loopback_proxy("127.0.0.1").is_ok());
+        assert!(require_loopback_proxy("127.5.0.99").is_ok());
+    }
+
+    #[test]
+    fn loopback_ipv6_literal_is_accepted() {
+        assert!(require_loopback_proxy("::1").is_ok());
+    }
+
+    #[test]
+    fn non_loopback_literal_is_rejected() {
+        assert!(require_loopback_proxy("10.0.0.1").is_err());
+        assert!(require_loopback_proxy("8.8.8.8").is_err());
+        assert!(require_loopback_proxy("2001:4860:4860::8888").is_err());
+    }
+
+    #[test]
+    fn invalid_string_is_rejected() {
+        // Bogus hostname won't resolve; must surface as an error rather than
+        // silently accepted as loopback.
+        assert!(require_loopback_proxy("definitely.not.a.real.host.invalid.").is_err());
     }
 }

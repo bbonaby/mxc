@@ -2,12 +2,9 @@
 // Licensed under the MIT License.
 
 use std::path::{Path, PathBuf};
-use std::ptr;
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::WAIT_OBJECT_0;
-use windows::Win32::Security::PSID;
-use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::System::Threading::{
     CreateEventW, OpenProcess, SetEvent, WaitForSingleObject, PROCESS_SYNCHRONIZE,
 };
@@ -16,107 +13,8 @@ use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLE
 use wxc_common::error::WxcError;
 use wxc_common::logger::Logger;
 use wxc_common::models::{ProxyAddress, ProxyConfig};
-use wxc_common::process_util::{resolve_sibling_binary, OwnedHandle, SidAndAttributes};
+use wxc_common::process_util::{resolve_sibling_binary, OwnedHandle};
 use wxc_common::string_util;
-
-/// Remove an AppContainer from the loopback exemption list.
-fn remove_loopback_exemption(container_name: &str) {
-    let _ = std::process::Command::new("CheckNetIsolation.exe")
-        .args([
-            "LoopbackExempt",
-            "-d",
-            &format!("-n={}", container_name.to_lowercase()),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-}
-
-/// Enable loopback network access for a single AppContainer.
-///
-/// Preserves existing exemptions by reading the current list first.
-fn enable_loopback(container_sid: PSID) -> Result<(), WxcError> {
-    type FnGetConfig =
-        unsafe extern "system" fn(count: *mut u32, entries: *mut *mut SidAndAttributes) -> u32;
-    type FnSetConfig =
-        unsafe extern "system" fn(count: u32, entries: *const SidAndAttributes) -> u32;
-
-    let dll_name = string_util::to_wide("FirewallAPI.dll");
-    let module = unsafe { GetModuleHandleW(PCWSTR(dll_name.as_ptr())) }
-        .map_err(|err| WxcError::NetworkProxy(format!("FirewallAPI.dll not loaded: {}", err)))?;
-
-    let get_proc = unsafe {
-        GetProcAddress(
-            module,
-            windows::core::s!("NetworkIsolationGetAppContainerConfig"),
-        )
-    };
-    let set_proc = unsafe {
-        GetProcAddress(
-            module,
-            windows::core::s!("NetworkIsolationSetAppContainerConfig"),
-        )
-    };
-    let (Some(get_proc), Some(set_proc)) = (get_proc, set_proc) else {
-        return Err(WxcError::NetworkProxy(
-            "NetworkIsolation APIs not found in FirewallAPI.dll".into(),
-        ));
-    };
-
-    let result = unsafe {
-        let get_fn: FnGetConfig =
-            std::mem::transmute::<unsafe extern "system" fn() -> isize, FnGetConfig>(get_proc);
-        let set_fn: FnSetConfig =
-            std::mem::transmute::<unsafe extern "system" fn() -> isize, FnSetConfig>(set_proc);
-
-        let mut existing_count: u32 = 0;
-        let mut existing_entries: *mut SidAndAttributes = ptr::null_mut();
-        let get_result = get_fn(&mut existing_count, &mut existing_entries);
-
-        if get_result != 0 {
-            existing_count = 0;
-            existing_entries = ptr::null_mut();
-        }
-
-        let mut combined: Vec<SidAndAttributes> = Vec::new();
-        if !existing_entries.is_null() {
-            for index in 0..existing_count as usize {
-                let entry = &*existing_entries.add(index);
-                combined.push(SidAndAttributes {
-                    sid: entry.sid,
-                    attributes: entry.attributes,
-                });
-            }
-        }
-        combined.push(SidAndAttributes {
-            sid: container_sid,
-            attributes: 0,
-        });
-
-        let set_result = set_fn(combined.len() as u32, combined.as_ptr());
-
-        if !existing_entries.is_null() {
-            if let Ok(heap) = windows::Win32::System::Memory::GetProcessHeap() {
-                let _ = windows::Win32::System::Memory::HeapFree(
-                    heap,
-                    windows::Win32::System::Memory::HEAP_FLAGS(0),
-                    Some(existing_entries as *const core::ffi::c_void),
-                );
-            }
-        }
-
-        set_result
-    };
-
-    if result != 0 {
-        return Err(WxcError::NetworkProxy(format!(
-            "Failed to set loopback exemption: 0x{:08x}",
-            result
-        )));
-    }
-
-    Ok(())
-}
 
 /// Generate a unique identifier for event and file naming.
 fn generate_unique_id() -> String {
@@ -221,7 +119,6 @@ pub struct ProxyCoordinator {
     test_proxy_handle: Option<OwnedHandle>,
     test_proxy_cleanup_event: Option<OwnedHandle>,
     test_proxy_ready_file_path: Option<PathBuf>,
-    loopback_container_name: Option<String>,
 }
 
 /// Signal a child process to exit via its cleanup event and wait for it.
@@ -261,7 +158,6 @@ impl ProxyCoordinator {
             test_proxy_handle: None,
             test_proxy_cleanup_event: None,
             test_proxy_ready_file_path: None,
-            loopback_container_name: None,
         }
     }
 
@@ -278,14 +174,14 @@ impl ProxyCoordinator {
     /// Activate the proxy based on the given config.
     ///
     /// If `builtin_test_server` is set, launches `wxc-test-proxy.exe` first to
-    /// obtain a port. Then sets up loopback exemption and WinHTTP proxy policy
-    /// via the elevated shim.
+    /// obtain a port. Then sets up WinHTTP proxy policy via the elevated shim.
+    /// Loopback access for the sandbox is granted via the `networkLoopback`
+    /// capability on the AppContainer (set when capabilities are built), so
+    /// this coordinator no longer touches the OS loopback-exemption list.
     pub fn start(
         &mut self,
         proxy_config: &ProxyConfig,
-        container_name: &str,
         principal_id: &str,
-        script_sid: PSID,
         logger: &mut Logger,
     ) -> Result<(), WxcError> {
         if self.is_active() {
@@ -304,12 +200,6 @@ impl ProxyCoordinator {
         };
 
         self.proxy_address = Some(address);
-
-        if let Err(err) = enable_loopback(script_sid) {
-            self.stop(logger);
-            return Err(err);
-        }
-        self.loopback_container_name = Some(container_name.to_string());
 
         if let Err(err) = self.launch_shim(principal_id, logger) {
             self.stop(logger);
@@ -452,7 +342,7 @@ impl ProxyCoordinator {
         )
     }
 
-    /// Stop the proxy: signal shim and test proxy cleanup, remove loopback exemption.
+    /// Stop the proxy: signal shim and test proxy cleanup.
     pub fn stop(&mut self, logger: &mut Logger) {
         signal_process_cleanup(
             self.shim_cleanup_event.take(),
@@ -473,9 +363,6 @@ impl ProxyCoordinator {
         }
         if let Some(path) = self.test_proxy_ready_file_path.take() {
             let _ = std::fs::remove_file(&path);
-        }
-        if let Some(container_name) = self.loopback_container_name.take() {
-            remove_loopback_exemption(&container_name);
         }
     }
 }

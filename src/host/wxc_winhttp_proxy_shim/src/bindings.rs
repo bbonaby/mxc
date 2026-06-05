@@ -32,6 +32,18 @@ pub struct WinHttpConnectionPolicyEntryList {
     pub n_entries: u32,
 }
 
+#[repr(C)]
+pub struct WinHttpConnectionIfindexEntry {
+    pub pwsz_connection_name: *const u16,
+    pub dw_if_index: u32,
+}
+
+#[repr(C)]
+pub struct WinHttpConnectionIfindexList {
+    pub n_entries: u32,
+    pub p_connection_ifindex_entries: *mut WinHttpConnectionIfindexEntry,
+}
+
 pub const WINHTTP_CONNECTION_PROXY_INFO_CURRENT_VERSION: u32 = 1;
 pub const WINHTTP_CONNECTION_PROXY_TYPE_HTTP: u32 = 0;
 
@@ -66,9 +78,9 @@ pub type FnWinHttpConnectionSetPolicyEntries = unsafe extern "system" fn(
     policy_list: *mut WinHttpConnectionPolicyEntryList,
 ) -> u32;
 
-pub type FnWinHttpConnectionDeletePolicyEntries = unsafe extern "system" fn(
+pub type FnWinHttpConnectionUpdateIfIndexTable = unsafe extern "system" fn(
     h_session: *mut core::ffi::c_void,
-    tag: WinHttpConnectionPolicyTag,
+    ifindex_list: *mut WinHttpConnectionIfindexList,
 ) -> u32;
 
 pub type FnWinHttpConnectionSetProxyInfo = unsafe extern "system" fn(

@@ -456,6 +456,28 @@ impl AppContainerScriptRunner {
             capabilities_to_add.push("internetClient".to_string());
         }
 
+        // When a proxy is configured, the AppContainer must talk to the
+        // loopback-bound proxy server instead of the open internet. Drop
+        // `internetClient` and grant `networkLoopback` so the OS allows the
+        // loopback connection without a per-container loopback exemption.
+        if request.policy.network_proxy.is_enabled() {
+            let stripped = capabilities_to_add.iter().any(|c| c == "internetClient");
+            capabilities_to_add.retain(|c| c != "internetClient");
+            if stripped {
+                logger.log_line(
+                    "Proxy active: stripped 'internetClient' capability; \
+                     sandbox traffic is restricted to the configured proxy.",
+                );
+            }
+            if !capabilities_to_add.iter().any(|c| c == "networkLoopback") {
+                capabilities_to_add.push("networkLoopback".to_string());
+                logger.log_line(
+                    "Proxy active: granted 'networkLoopback' capability so the \
+                     sandbox can reach the loopback proxy.",
+                );
+            }
+        }
+
         // --- Derive SIDs for each capability ---
         let mut capability_sid_guard = CapabilitySidGuard::new();
         let mut sid_attrs: Vec<SidAndAttributes> = Vec::new();
@@ -994,13 +1016,7 @@ impl ScriptRunner for AppContainerScriptRunner {
         }
 
         let mut network_manager = NetworkManager::new();
-        match network_manager.start(
-            &principal_id,
-            &self.app_container_name,
-            &request.policy,
-            self.app_container_sid,
-            logger,
-        ) {
+        match network_manager.start(&principal_id, &request.policy, logger) {
             Ok(()) => {
                 self.proxy_address = network_manager.proxy_address().cloned();
             }
