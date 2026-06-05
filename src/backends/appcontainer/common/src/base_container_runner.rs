@@ -146,7 +146,7 @@ impl BaseContainerRunner {
     /// - `disallow_win32k_system_calls` from `ui.disable`
     /// - `ui_restrictions` bitmask from `ui.to_ui_restrictions_bitmask()`
     /// - `network_policy.proxy.url` from proxy config
-    fn build_sandbox_spec(request: &ExecutionRequest) -> Vec<u8> {
+    fn build_sandbox_spec(request: &ExecutionRequest, logger: &mut Logger) -> Vec<u8> {
         let mut builder = flatbuffers::FlatBufferBuilder::with_capacity(1024);
 
         let version = builder.create_string(SANDBOX_SPEC_VERSION);
@@ -165,6 +165,16 @@ impl BaseContainerRunner {
         {
             caps.push("internetClient".to_string());
         }
+
+        // When a proxy is configured, replace `internetClient` with
+        // `networkLoopback` so the AppContainer can reach the loopback
+        // proxy without an OS loopback exemption. Shared with the
+        // AppContainer runner to keep the two backends in lockstep.
+        crate::proxy_support::apply_proxy_capability_adjustments(
+            &mut caps,
+            request.policy.network_proxy.is_enabled(),
+            logger,
+        );
 
         let capabilities = if caps.is_empty() {
             None
@@ -420,6 +430,7 @@ impl ScriptRunner for BaseContainerRunner {
                 wxc_common::error::HOST_LISTS_NOT_SUPPORTED_MSG,
             ));
         }
+        crate::proxy_support::validate_proxy_for_runner(request)?;
         Self::is_base_container_api_present().map_err(|e| {
             let hint = if !request.experimental_enabled {
                 format!(
@@ -489,7 +500,7 @@ impl ScriptRunner for BaseContainerRunner {
         let _ = writeln!(logger, "{EMOJI_SECTION} SECTION: Build sandbox spec");
 
         // 1. Build the FlatBuffer sandbox spec from the request policy.
-        let spec_bytes = Self::build_sandbox_spec(&request);
+        let spec_bytes = Self::build_sandbox_spec(&request, logger);
 
         Self::log_sandbox_spec(&spec_bytes, logger);
 
@@ -971,7 +982,10 @@ mod tests {
         request.policy.readwrite_paths = vec!["C:\\temp".into()];
         request.policy.readonly_paths = vec!["C:\\Windows".into()];
 
-        let bytes = BaseContainerRunner::build_sandbox_spec(&request);
+        let bytes = BaseContainerRunner::build_sandbox_spec(
+            &request,
+            &mut Logger::new(wxc_common::logger::Mode::Buffer),
+        );
 
         // Verify the buffer has the SBOX identifier.
         assert!(base_container_layout::sandbox_spec_buffer_has_identifier(
@@ -1018,7 +1032,10 @@ mod tests {
     fn build_sandbox_spec_empty_policy() {
         // Default network policy is Block — no internetClient auto-add.
         let request = ExecutionRequest::default();
-        let bytes = BaseContainerRunner::build_sandbox_spec(&request);
+        let bytes = BaseContainerRunner::build_sandbox_spec(
+            &request,
+            &mut Logger::new(wxc_common::logger::Mode::Buffer),
+        );
 
         assert!(base_container_layout::sandbox_spec_buffer_has_identifier(
             &bytes
@@ -1040,7 +1057,10 @@ mod tests {
         let mut request = ExecutionRequest::default();
         request.policy.default_network_policy = NetworkPolicy::Block;
 
-        let bytes = BaseContainerRunner::build_sandbox_spec(&request);
+        let bytes = BaseContainerRunner::build_sandbox_spec(
+            &request,
+            &mut Logger::new(wxc_common::logger::Mode::Buffer),
+        );
         let spec = base_container_layout::root_as_sandbox_spec(&bytes).unwrap();
         assert!(spec.capabilities().is_none());
     }
@@ -1053,7 +1073,10 @@ mod tests {
             ..Default::default()
         };
 
-        let bytes = BaseContainerRunner::build_sandbox_spec(&request);
+        let bytes = BaseContainerRunner::build_sandbox_spec(
+            &request,
+            &mut Logger::new(wxc_common::logger::Mode::Buffer),
+        );
         let spec = base_container_layout::root_as_sandbox_spec(&bytes).unwrap();
 
         assert!(spec.disallow_win32k_system_calls());
@@ -1084,7 +1107,10 @@ mod tests {
             injection: true,
         };
 
-        let bytes = BaseContainerRunner::build_sandbox_spec(&request);
+        let bytes = BaseContainerRunner::build_sandbox_spec(
+            &request,
+            &mut Logger::new(wxc_common::logger::Mode::Buffer),
+        );
         let spec = base_container_layout::root_as_sandbox_spec(&bytes).unwrap();
 
         assert!(!spec.disallow_win32k_system_calls());
@@ -1115,7 +1141,10 @@ mod tests {
             injection: false,
         };
 
-        let bytes = BaseContainerRunner::build_sandbox_spec(&request);
+        let bytes = BaseContainerRunner::build_sandbox_spec(
+            &request,
+            &mut Logger::new(wxc_common::logger::Mode::Buffer),
+        );
         let spec = base_container_layout::root_as_sandbox_spec(&bytes).unwrap();
 
         assert!(!spec.disallow_win32k_system_calls());
@@ -1147,7 +1176,10 @@ mod tests {
             builtin_test_server: false,
         };
 
-        let bytes = BaseContainerRunner::build_sandbox_spec(&request);
+        let bytes = BaseContainerRunner::build_sandbox_spec(
+            &request,
+            &mut Logger::new(wxc_common::logger::Mode::Buffer),
+        );
         let spec = base_container_layout::root_as_sandbox_spec(&bytes).unwrap();
 
         let net = spec.network_policy().expect("network_policy should be set");
@@ -1158,7 +1190,10 @@ mod tests {
     #[test]
     fn build_sandbox_spec_no_proxy() {
         let request = ExecutionRequest::default();
-        let bytes = BaseContainerRunner::build_sandbox_spec(&request);
+        let bytes = BaseContainerRunner::build_sandbox_spec(
+            &request,
+            &mut Logger::new(wxc_common::logger::Mode::Buffer),
+        );
         let spec = base_container_layout::root_as_sandbox_spec(&bytes).unwrap();
         assert!(spec.network_policy().is_none());
     }

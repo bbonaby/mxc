@@ -33,6 +33,8 @@ pub mod probe;
 pub mod process_mitigation;
 #[cfg(target_os = "windows")]
 pub mod proxy_coordinator;
+
+pub mod proxy_support;
 #[cfg(target_os = "windows")]
 pub mod sandbox_tracking;
 

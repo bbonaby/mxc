@@ -3,8 +3,8 @@
   "containerId": "CLI-Proxy-Builtin-Test",
   "containment": "processcontainer",
   "process": {
-    "commandLine": "python -c \"import urllib.request\n\nprint('Test 1: Requesting api.github.com...')\ntry:\n    response = urllib.request.urlopen('https://api.github.com', timeout=10)\n    print(f'  Status: {response.status}')\nexcept Exception as err:\n    print(f'  Error: {err}')\n\nprint()\nprint('Done.')\"",
-    "timeout": 15000
+    "commandLine": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"Write-Host 'Test 1: Requesting http://api.github.com via WinHTTP COM (WinHttp.WinHttpRequest.5.1)...'; try { $w = New-Object -ComObject WinHttp.WinHttpRequest.5.1; $w.SetTimeouts(10000,10000,10000,10000); $w.Open('GET','http://api.github.com',$false); $w.Send(); Write-Host ('  Status: ' + $w.Status) } catch { Write-Host ('  Error: ' + $_.Exception.Message) }; Write-Host ''; Write-Host 'Done.'\"",
+    "timeout": 20000
   },
   "processContainer": {
     "capabilities": [

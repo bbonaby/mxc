@@ -456,27 +456,11 @@ impl AppContainerScriptRunner {
             capabilities_to_add.push("internetClient".to_string());
         }
 
-        // When a proxy is configured, the AppContainer must talk to the
-        // loopback-bound proxy server instead of the open internet. Drop
-        // `internetClient` and grant `networkLoopback` so the OS allows the
-        // loopback connection without a per-container loopback exemption.
-        if request.policy.network_proxy.is_enabled() {
-            let stripped = capabilities_to_add.iter().any(|c| c == "internetClient");
-            capabilities_to_add.retain(|c| c != "internetClient");
-            if stripped {
-                logger.log_line(
-                    "Proxy active: stripped 'internetClient' capability; \
-                     sandbox traffic is restricted to the configured proxy.",
-                );
-            }
-            if !capabilities_to_add.iter().any(|c| c == "networkLoopback") {
-                capabilities_to_add.push("networkLoopback".to_string());
-                logger.log_line(
-                    "Proxy active: granted 'networkLoopback' capability so the \
-                     sandbox can reach the loopback proxy.",
-                );
-            }
-        }
+        crate::proxy_support::apply_proxy_capability_adjustments(
+            &mut capabilities_to_add,
+            request.policy.network_proxy.is_enabled(),
+            logger,
+        );
 
         // --- Derive SIDs for each capability ---
         let mut capability_sid_guard = CapabilitySidGuard::new();
@@ -945,6 +929,7 @@ impl ScriptRunner for AppContainerScriptRunner {
                 wxc_common::error::HOST_LISTS_NOT_SUPPORTED_MSG,
             ));
         }
+        crate::proxy_support::validate_proxy_for_runner(request)?;
         Ok(())
     }
 
