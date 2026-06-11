@@ -948,8 +948,8 @@ Security:
    sandbox egress. Depends on new OS surfaces outside MXC's control;
    not committed for GA. Open until the relevant networking teams
    weigh in.
-6. **Schema shape: three lists vs. unified outbound rules.** External
-   review proposed collapsing `allowedHosts` / `blockedHosts` /
+6. **Schema shape: three lists vs. unified outbound rules.** We could
+   collapse `allowedHosts` / `blockedHosts` /
    `protocols` into a single `outbound: { default, allow[], block[] }`
    with transport and port carried per rule. Cleaner (no cross-list
    interaction to reason about); cost is a breaking change to the
