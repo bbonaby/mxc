@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Copyright (c) Microsoft Corporation.
+  Licensed under the MIT License.
+
+  WiX 5/6 source for the mxc-service MSI.
+
+  Builds a single-component package that installs:
+    * mxc-service.exe  (the elevated WFP broker)
+    * mxc-net.exe      (smoke-test client)
+  and registers `mxc-service` as a LocalSystem Windows service.
+
+  Prototype caveats vs. spec section 4:
+    * Runs as LocalSystem (not a restricted virtual account). LocalSystem
+      gives a working WFP baseline so the prototype is not blocked on
+      DACL plumbing for a custom service identity.
+    * Service is started on install and on every boot.
+    * UpgradeCode is fixed so MajorUpgrade replaces prior installs in-
+      place — every build script run produces a higher version number
+      and the old service is removed before the new one is installed.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="MXC Tier 2 Service"
+      Manufacturer="Microsoft Corporation (MXC Prototype)"
+      Version="$(var.ProductVersion)"
+      UpgradeCode="7a3d1bb0-3f1e-4d7a-9c4e-5a36f51e9b00"
+      Scope="perMachine"
+      InstallerVersion="500">
+
+    <MajorUpgrade
+        DowngradeErrorMessage="A newer version of [ProductName] is already installed."
+        Schedule="afterInstallInitialize"/>
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Feature Id="MainFeature" Title="MXC Tier 2 Service" Level="1">
+      <ComponentGroupRef Id="ServiceFiles" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="CompanyFolder" Name="Microsoft">
+        <Directory Id="INSTALLFOLDER" Name="MXC Service" />
+      </Directory>
+    </StandardDirectory>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="ServiceFiles" Directory="INSTALLFOLDER">
+      <Component Id="MxcServiceExeCmp" Guid="7a3d1bb1-3f1e-4d7a-9c4e-5a36f51e9b01">
+        <File Id="MxcServiceExe"
+              Source="$(var.ServiceBinaryDir)\mxc-service.exe"
+              KeyPath="yes" />
+        <ServiceInstall Id="MxcServiceInstall"
+                        Type="ownProcess"
+                        Name="mxc-service"
+                        DisplayName="MXC Tier 2 Service"
+                        Description="MXC Tier 2 elevated WFP broker (prototype)."
+                        Start="auto"
+                        Account="LocalSystem"
+                        ErrorControl="normal"
+                        Vital="yes" />
+        <ServiceControl Id="MxcServiceControl"
+                        Name="mxc-service"
+                        Start="install"
+                        Stop="both"
+                        Remove="uninstall"
+                        Wait="yes" />
+      </Component>
+
+      <Component Id="MxcNetExeCmp" Guid="7a3d1bb2-3f1e-4d7a-9c4e-5a36f51e9b02">
+        <File Id="MxcNetExe"
+              Source="$(var.ServiceBinaryDir)\mxc-net.exe"
+              KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>
