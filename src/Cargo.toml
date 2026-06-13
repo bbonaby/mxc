@@ -30,6 +30,9 @@ members = [
     "testing/linux_test_proxy",
     "testing/wxc_ui_probe",
     "tools/mxc_diagnostic_console",
+    "service/mxc_service_proto",
+    "service/mxc_service",
+    "service/mxc_service_client",
 ]
 exclude = ["testing/fuzz"]
 resolver = "3"
@@ -79,6 +82,9 @@ windows = { version = "0.62", features = [
     "Win32_System_SystemServices",
     "Win32_System_SystemInformation",
     "Win32_System_JobObjects",
+    "Win32_NetworkManagement_WindowsFilteringPlatform",
+    "Win32_System_Services",
+    "Win32_System_Rpc",
 ] }
 windows-core = "0.62"
 serde = { version = "1", features = ["derive"] }
@@ -109,3 +115,7 @@ widestring = "1"
 url = "2"
 winreg = "0.55"
 mxc_build_common = { path = "core/mxc_build_common" }
+mxc_service_proto = { path = "service/mxc_service_proto" }
+ciborium = "0.2"
+windows-service = "0.7"
+ctrlc = "3"
