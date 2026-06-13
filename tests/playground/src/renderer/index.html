@@ -331,6 +331,25 @@
             </div>
           </div>
         </section>
+
+        <!-- Tier 2 broker (mxc-service prototype) -->
+        <section class="sidebar-section" id="tier2BrokerSection">
+          <h2 class="section-title">Tier 2 Broker (mxc-service)</h2>
+          <div class="section-body" style="padding: 0.5rem 1rem;">
+            <p style="font-size: 0.85em; color: #888; margin: 0 0 0.5rem;">
+              Drives the elevated WFP broker via <code>mxc-net.exe</code>. The
+              service must be installed (see <code>scripts/build-mxc-service.ps1 -Install</code>).
+            </p>
+            <div style="display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 0.5rem;">
+              <button id="btnBrokerVersion" class="btn">Probe Service</button>
+              <button id="btnBrokerAddDemo" class="btn">Add Demo Policy</button>
+              <button id="btnBrokerRemove" class="btn" disabled>Remove Last Policy</button>
+            </div>
+            <input type="text" id="brokerAcSid" placeholder="AppContainer SID (S-1-15-2-...)"
+                   style="width: 100%; padding: 0.3rem; margin-bottom: 0.4rem; font-family: monospace; font-size: 0.85em;" />
+            <pre id="brokerOutput" style="font-family: monospace; font-size: 0.78em; background: #1e1e1e; color: #ddd; padding: 0.5rem; max-height: 12rem; overflow: auto; white-space: pre-wrap; margin: 0;">(no output yet)</pre>
+          </div>
+        </section>
         </div><!-- end sidebar-scroll -->
 
         <!-- Run button area -->

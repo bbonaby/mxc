@@ -31,4 +31,10 @@ contextBridge.exposeInMainWorld('mxc', {
   detectPythonVersions: () => ipcRenderer.invoke('detect-python-versions'),
   runSandboxRaw: (configJson: string, debug: boolean, experimental: boolean) =>
     ipcRenderer.invoke('run-sandbox-raw', configJson, debug, experimental),
+
+  // Tier 2 broker (mxc-service via mxc-net.exe)
+  brokerVersion: () => ipcRenderer.invoke('broker-version'),
+  brokerAddPolicy: (acSid: string, defaultPolicy: 'allow' | 'block', rules: string[], sandboxPid: number) =>
+    ipcRenderer.invoke('broker-add-policy', acSid, defaultPolicy, rules, sandboxPid),
+  brokerRemovePolicy: (policyId: string) => ipcRenderer.invoke('broker-remove-policy', policyId),
 });

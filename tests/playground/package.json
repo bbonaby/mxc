@@ -55,6 +55,14 @@
         "to": "bin/x64/wxc-sandbox-agent.exe"
       },
       {
+        "from": "../src/target/x86_64-pc-windows-msvc/release/mxc-net.exe",
+        "to": "bin/x64/mxc-net.exe"
+      },
+      {
+        "from": "../src/target/x86_64-pc-windows-msvc/release/mxc-service.exe",
+        "to": "bin/x64/mxc-service.exe"
+      },
+      {
         "from": "../src/target/x86_64-pc-windows-msvc/release/nanvixd.exe",
         "to": "bin/x64/nanvixd.exe"
       },
