@@ -65,6 +65,7 @@ fn run_console() -> anyhow::Result<()> {
     ctrlc::set_handler(move || {
         log::info("ctrl-c received, shutting down");
         shutdown_for_ctrlc.store(true, Ordering::SeqCst);
+        ipc::wake_accept_loop();
     })
     .ok();
 
@@ -116,6 +117,7 @@ mod service {
             match control_event {
                 ServiceControl::Stop | ServiceControl::Shutdown => {
                     shutdown_for_handler.store(true, Ordering::SeqCst);
+                    ipc::wake_accept_loop();
                     ServiceControlHandlerResult::NoError
                 }
                 ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,

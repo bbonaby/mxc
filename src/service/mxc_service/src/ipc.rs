@@ -57,29 +57,37 @@ impl Server {
 
     pub fn run(&self) -> anyhow::Result<()> {
         log::info(&format!("listening on {PIPE_NAME}"));
-        let mut first_instance = true;
         while !self.shutdown.load(Ordering::SeqCst) {
-            match self.accept_one(first_instance) {
+            match self.accept_one() {
                 Ok(()) => {}
                 Err(e) => log::error(&format!("connection failed: {e:#}")),
             }
-            first_instance = false;
         }
         log::info("shutdown signaled, exiting");
         Ok(())
     }
 
-    fn accept_one(&self, first_instance: bool) -> anyhow::Result<()> {
-        let pipe = create_pipe(first_instance).context("CreateNamedPipeW")?;
+    fn accept_one(&self) -> anyhow::Result<()> {
+        // Always pass FIRST_PIPE_INSTANCE so a local squatter that
+        // raced us to the name causes a loud failure instead of being
+        // silently joined as a second instance.
+        let pipe = create_pipe().context("CreateNamedPipeW")?;
 
-        // Block until a client connects (or shutdown — checked after).
+        // Block until a client connects (or shutdown wakes us via a
+        // self-connect from `wake_accept_loop`).
         unsafe {
             // ConnectNamedPipe returns FALSE with ERROR_PIPE_CONNECTED
             // (535) if the client connected between Create and Connect.
             let _ = ConnectNamedPipe(HANDLE(pipe.as_raw_handle() as *mut c_void), None);
-            // We don't currently distinguish that error from real
-            // failure — both paths produce a usable pipe handle.
             let _ = GetLastError();
+        }
+
+        if self.shutdown.load(Ordering::SeqCst) {
+            // Woken by wake_accept_loop; nothing to dispatch.
+            unsafe {
+                let _ = DisconnectNamedPipe(HANDLE(pipe.as_raw_handle() as *mut c_void));
+            }
+            return Ok(());
         }
 
         let caller_pid = client_pid(pipe.as_raw_handle());
@@ -200,19 +208,17 @@ impl<'a> std::io::Write for PipeIo<'a> {
     }
 }
 
-fn create_pipe(first_instance: bool) -> anyhow::Result<OwnedHandle> {
+fn create_pipe() -> anyhow::Result<OwnedHandle> {
     let name = HSTRING::from(PIPE_NAME);
-    let mut open_mode: FILE_FLAGS_AND_ATTRIBUTES = PIPE_ACCESS_DUPLEX;
-    if first_instance {
-        open_mode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
-    }
+    let open_mode: FILE_FLAGS_AND_ATTRIBUTES =
+        PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE;
     let pipe_mode = PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS;
     let handle = unsafe {
         CreateNamedPipeW(
             PCWSTR(name.as_ptr()),
             open_mode,
             pipe_mode,
-            255,
+            1,
             PIPE_BUFFER_BYTES,
             PIPE_BUFFER_BYTES,
             Duration::from_secs(5).as_millis() as u32,
@@ -224,6 +230,31 @@ fn create_pipe(first_instance: bool) -> anyhow::Result<OwnedHandle> {
         anyhow::bail!("CreateNamedPipeW failed: Win32 {err:?}");
     }
     Ok(unsafe { OwnedHandle::from_raw_handle(handle.0 as RawHandle) })
+}
+
+/// Wake a blocked `ConnectNamedPipe` by opening (and immediately
+/// closing) a client connection. Called from the SCM control handler
+/// after flipping the shutdown flag.
+pub fn wake_accept_loop() {
+    use windows::Win32::Foundation::GENERIC_READ;
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_SHARE_MODE, OPEN_EXISTING, FILE_FLAGS_AND_ATTRIBUTES as FFA,
+    };
+    let name = HSTRING::from(PIPE_NAME);
+    unsafe {
+        let h = CreateFileW(
+            PCWSTR(name.as_ptr()),
+            GENERIC_READ.0,
+            FILE_SHARE_MODE(0),
+            None,
+            OPEN_EXISTING,
+            FFA(0),
+            None,
+        );
+        if let Ok(h) = h {
+            let _ = CloseHandle(h);
+        }
+    }
 }
 
 fn client_pid(pipe: RawHandle) -> u32 {
