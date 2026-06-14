@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Context;
 use clap::Parser;
 
+mod grant;
 mod ipc;
 mod log;
 mod wfp;
@@ -35,11 +36,32 @@ struct Cli {
     /// invisible.
     #[arg(long)]
     console: bool,
+
+    /// Install-time hook (invoked by the MSI custom action while
+    /// running as `LocalSystem`): write an inheritable ACE on the BFE
+    /// engine SD granting the `NT SERVICE\mxc-service` per-service SID
+    /// the WFP rights it needs. See `grant.rs` and spec §4.1.
+    #[arg(long, hide = true, conflicts_with_all = ["console", "uninstall_grant"])]
+    install_grant: bool,
+
+    /// Uninstall-time hook: best-effort revoke the engine ACE.
+    #[arg(long, hide = true, conflicts_with_all = ["console", "install_grant"])]
+    uninstall_grant: bool,
 }
 
 #[cfg(windows)]
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if cli.install_grant {
+        log::init_console();
+        log::info("install-grant: granting engine ACE to NT SERVICE\\mxc-service");
+        return grant::install_grant();
+    }
+    if cli.uninstall_grant {
+        log::init_console();
+        log::info("uninstall-grant: revoking engine ACE");
+        return grant::uninstall_grant();
+    }
     if cli.console {
         log::init_console();
         log::info("starting in --console mode");

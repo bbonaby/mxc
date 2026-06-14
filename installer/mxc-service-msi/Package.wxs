@@ -3,21 +3,35 @@
   Copyright (c) Microsoft Corporation.
   Licensed under the MIT License.
 
-  WiX 5/6 source for the mxc-service MSI.
+  WiX 5+ source for the mxc-service MSI. Implements spec §4.1 service
+  identity:
 
-  Builds a single-component package that installs:
-    * mxc-service.exe  (the elevated WFP broker)
-    * mxc-net.exe      (smoke-test client)
-  and registers `mxc-service` as a LocalSystem Windows service.
+    * Service runs as NT AUTHORITY\LocalService (NOT LocalSystem).
+    * `sc sidtype mxc-service restricted` — gives the service token
+      SERVICE_SID_TYPE_RESTRICTED. The four-SID restricted list (per-
+      service SID, World, service logon SID, S-1-5-33) means write
+      access succeeds only where a DACL explicitly grants one of those.
+    * `sc privs mxc-service SeChangeNotifyPrivilege` — strips ambient
+      privileges to the floor (SeChangeNotify is required for path
+      resolution; everything else is dropped).
+    * mxc-service.exe install-grant flag (custom action, runs as
+      LocalSystem during deferred install): writes an inheritable ACE
+      on the BFE engine SD granting NT SERVICE\mxc-service:
+        FWPM_ACTRL_OPEN | FWPM_ACTRL_ADD | FWPM_ACTRL_ADD_LINK
+        | DELETE | FWPM_ACTRL_ENUM | FWPM_ACTRL_READ
+      with CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE so the grant
+      propagates to filters/sublayers/providers we create later.
 
-  Prototype caveats vs. spec section 4:
-    * Runs as LocalSystem (not a restricted virtual account). LocalSystem
-      gives a working WFP baseline so the prototype is not blocked on
-      DACL plumbing for a custom service identity.
-    * Service is started on install and on every boot.
-    * UpgradeCode is fixed so MajorUpgrade replaces prior installs in-
-      place — every build script run produces a higher version number
-      and the old service is removed before the new one is installed.
+  Sequencing (after InstallServices, before StartServices):
+      InstallServices
+        → SetSidType         (sc sidtype)
+        → SetPrivs           (sc privs)
+        → GrantWfpRights     (mxc-service.exe install-grant flag)
+      StartServices
+
+  On uninstall, RevokeWfpRights runs before service stop/remove and is
+  best-effort (it's fine if the SID is already gone). Service still
+  starts on install; MajorUpgrade still replaces prior installs.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Package
@@ -37,6 +51,45 @@
     <Feature Id="MainFeature" Title="MXC Tier 2 Service" Level="1">
       <ComponentGroupRef Id="ServiceFiles" />
     </Feature>
+
+    <!-- Custom actions: see header for full rationale. -->
+    <CustomAction Id="SetSidType"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="[SystemFolder]sc.exe sidtype mxc-service restricted"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+
+    <CustomAction Id="SetPrivs"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="[SystemFolder]sc.exe privs mxc-service SeChangeNotifyPrivilege"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+
+    <CustomAction Id="GrantWfpRights"
+                  FileRef="MxcServiceExe"
+                  ExeCommand="--install-grant"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="check" />
+
+    <CustomAction Id="RevokeWfpRights"
+                  FileRef="MxcServiceExe"
+                  ExeCommand="--uninstall-grant"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+
+    <InstallExecuteSequence>
+      <!-- Install-time: tighten service identity, then grant engine ACE. -->
+      <Custom Action="SetSidType"     After="InstallServices"  Condition="NOT REMOVE=&quot;ALL&quot;" />
+      <Custom Action="SetPrivs"       After="SetSidType"       Condition="NOT REMOVE=&quot;ALL&quot;" />
+      <Custom Action="GrantWfpRights" After="SetPrivs"         Condition="NOT REMOVE=&quot;ALL&quot;" />
+
+      <!-- Uninstall-time: revoke ACE before the service is stopped/deleted. -->
+      <Custom Action="RevokeWfpRights" Before="StopServices"   Condition="REMOVE=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
   </Package>
 
   <Fragment>
@@ -57,9 +110,9 @@
                         Type="ownProcess"
                         Name="mxc-service"
                         DisplayName="MXC Tier 2 Service"
-                        Description="MXC Tier 2 elevated WFP broker (prototype)."
+                        Description="MXC Tier 2 WFP broker. Runs as restricted LocalService per spec §4.1."
                         Start="auto"
-                        Account="LocalSystem"
+                        Account="NT AUTHORITY\LocalService"
                         ErrorControl="normal"
                         Vital="yes" />
         <ServiceControl Id="MxcServiceControl"
