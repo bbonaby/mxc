@@ -25,7 +25,7 @@ function Invoke-WxcCurl {
     param([string]$ConfigPath, [string]$Label)
     Write-Host "`n=== $Label ===" -ForegroundColor Cyan
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    & $WxcExec --json $ConfigPath 2>&1 | Out-String | ForEach-Object { $_.TrimEnd() } | Write-Host
+    & $WxcExec $ConfigPath 2>&1 | Out-String | ForEach-Object { $_.TrimEnd() } | Write-Host
     $sw.Stop()
     Write-Host "elapsed: $($sw.Elapsed.TotalSeconds.ToString('0.00'))s" -ForegroundColor DarkGray
 }
@@ -53,7 +53,7 @@ if (-not (Test-Path $controlCfg)) {
     } | ConvertTo-Json -Depth 6 | Set-Content -Path $controlCfg -Encoding ascii
 }
 
-Invoke-WxcCurl -ConfigPath $controlCfg -Label "CONTROL: curl http://$ControlHost (no host list — direct curl)"
+Invoke-WxcCurl -ConfigPath $controlCfg -Label "CONTROL: curl http://$ControlHost (no host list - direct curl)"
 Invoke-WxcCurl -ConfigPath $blockCfg   -Label "BLOCKED: curl http://$TargetHost (broker installs WFP block via blockedHosts)"
 
 Write-Host ''
