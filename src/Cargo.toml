@@ -29,6 +29,7 @@ members = [
     "testing/wxc_test_proxy",
     "testing/linux_test_proxy",
     "testing/wxc_ui_probe",
+    "testing/ac_tcp_listener",
     "tools/mxc_diagnostic_console",
     "service/mxc_service_proto",
     "service/mxc_service_rpc",

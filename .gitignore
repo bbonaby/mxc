@@ -54,3 +54,6 @@ installer/mxc-service-msi/*.msi
 installer/mxc-service-msi/*.wixpdb
 installer/mxc-service-msi/obj/
 tests/src/target/
+
+out/
+

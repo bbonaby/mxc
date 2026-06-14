@@ -1,0 +1,18 @@
+{
+  "version": "0.4.0-alpha",
+  "containerId": "MxcBlock8888-Test",
+  "containment": "processcontainer",
+  "process": {
+    "commandLine": "powershell.exe -NoProfile -Command \"Write-Host '--- ping 8.8.8.8 (should be BLOCKED by network policy) ---'; ping.exe -n 2 -w 2000 8.8.8.8; Write-Host ''; Write-Host '--- ping 1.1.1.1 (allowed by policy: explicitly in allowedHosts) ---'; ping.exe -n 2 -w 2000 1.1.1.1; Write-Host ''; Write-Host '--- exitcode-of-block-ping: '; ping.exe -n 1 -w 2000 8.8.8.8 | Out-Null; Write-Host \\\"LASTEXITCODE=$LASTEXITCODE\\\"\"",
+    "timeout": 30000
+  },
+  "processContainer": {
+    "capabilities": ["internetClient"]
+  },
+  "network": {
+    "enforcementMode": "firewall",
+    "defaultPolicy": "allow",
+    "allowedHosts": ["1.1.1.1"],
+    "blockedHosts": ["8.8.8.8"]
+  }
+}

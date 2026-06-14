@@ -1,0 +1,8 @@
+[package]
+name = "ac_tcp_listener"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ac-tcp-listener"
+path = "src/main.rs"

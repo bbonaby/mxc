@@ -166,6 +166,16 @@ What is **not** on this list — implemented as designed:
   + `OpenThreadToken` capture the caller's user SID. Logged only,
   not used for trust decisions (the production design needs
   Authenticode caller verification, which remains a separate pass).
+- **WFP arbitration for AC↔AC loopback (empirical answer)**: ran
+  `Test-WfpArbitrationAcToAc.ps1` with a real Rust listener
+  (`ac_tcp_listener`) inside one AC and curl inside another. **MXC
+  user-mode PERMITs at `FWPM_LAYER_ALE_AUTH_CONNECT_V4` do NOT
+  dominate system filter 71655**: all three scenarios (no broker,
+  broker-block, broker-permit) produce identical 4-second timeouts.
+  This means the broker cannot fix AC↔AC loopback at the WFP layer;
+  the `networkLoopback` capability remains the only viable path for
+  that case (which is exactly what the original investigation
+  concluded).
 
 ## Things this prototype still does **not** prove
 
