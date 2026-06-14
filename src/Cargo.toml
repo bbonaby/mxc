@@ -31,6 +31,7 @@ members = [
     "testing/wxc_ui_probe",
     "tools/mxc_diagnostic_console",
     "service/mxc_service_proto",
+    "service/mxc_service_rpc",
     "service/mxc_service",
     "service/mxc_service_client",
 ]
@@ -114,6 +115,7 @@ url = "2"
 winreg = "0.55"
 mxc_build_common = { path = "core/mxc_build_common" }
 mxc_service_proto = { path = "service/mxc_service_proto" }
+mxc_service_rpc = { path = "service/mxc_service_rpc" }
 mxc_service_client = { path = "service/mxc_service_client" }
 ciborium = "0.2"
 windows-service = "0.7"

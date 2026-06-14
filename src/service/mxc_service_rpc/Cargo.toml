@@ -1,0 +1,22 @@
+[package]
+name = "mxc_service_rpc"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+client = []
+server = []
+
+[dependencies]
+windows = { workspace = true }
+mxc_service_proto = { workspace = true }
+anyhow = { workspace = true }
+ciborium = { workspace = true }
+serde = { workspace = true }
+
+[build-dependencies]
+cc = "1"

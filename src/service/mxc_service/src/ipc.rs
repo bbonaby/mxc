@@ -41,6 +41,8 @@ use windows::Win32::System::Pipes::{
 };
 
 use crate::diag;
+use crate::identity;
+use crate::lifetime;
 use crate::log;
 use crate::wfp::WfpEngine;
 
@@ -92,8 +94,15 @@ impl Server {
         }
 
         let caller_pid = client_pid(pipe.as_raw_handle());
-        log::info(&format!("client connected pid={caller_pid}"));
-        diag::emit(format!("ipc: client connected pid={caller_pid}"));
+        let caller_id = identity::capture(&pipe);
+        log::info(&format!(
+            "client connected pid={caller_pid} user_sid={}",
+            caller_id.user_sid
+        ));
+        diag::emit(format!(
+            "ipc: client connected pid={caller_pid} user_sid={}",
+            caller_id.user_sid
+        ));
 
         let request: Request = read_frame(&mut PipeIo(&pipe))
             .map_err(|e| anyhow::anyhow!("read_frame: {e}"))?;
@@ -111,82 +120,89 @@ impl Server {
     }
 
     fn dispatch(&self, req: Request, caller_pid: u32) -> Response {
-        match req {
-            Request::GetVersion => Response::Version(GetVersionResponse {
-                service_version: env!("CARGO_PKG_VERSION").into(),
-                ipc_major: IPC_MAJOR,
-                ipc_minor: IPC_MINOR,
-            }),
-            Request::AddPolicy(req) => self.handle_add(req, caller_pid),
-            Request::RemovePolicy(req) => self.handle_remove(req, caller_pid),
+        dispatch_request(req, &self.engine, caller_pid)
+    }
+}
+
+/// Shared dispatcher reused by both the named-pipe path and the LRPC path.
+pub fn dispatch_request(req: Request, engine: &Arc<WfpEngine>, caller_pid: u32) -> Response {
+    match req {
+        Request::GetVersion => Response::Version(GetVersionResponse {
+            service_version: env!("CARGO_PKG_VERSION").into(),
+            ipc_major: IPC_MAJOR,
+            ipc_minor: IPC_MINOR,
+        }),
+        Request::AddPolicy(req) => handle_add_impl(engine, req, caller_pid),
+        Request::RemovePolicy(req) => handle_remove_impl(engine, req, caller_pid),
+    }
+}
+
+fn handle_add_impl(engine: &Arc<WfpEngine>, req: AddPolicyRequest, caller_pid: u32) -> Response {
+    if req.rules.len() > MAX_RULES_PER_POLICY {
+        return Response::Error(ServiceError::TooManyRules {
+            max: MAX_RULES_PER_POLICY as u32,
+            got: req.rules.len() as u32,
+        });
+    }
+    log::info(&format!(
+        "AddPolicy caller_pid={caller_pid} ac_sid={} default={:?} rules={} sandbox_pid={}",
+        req.ac_sid_sddl,
+        req.default,
+        req.rules.len(),
+        req.sandbox_pid,
+    ));
+    diag::emit(format!(
+        "AddPolicy caller_pid={caller_pid} ac_sid={} default={:?} rules={} sandbox_pid={}",
+        req.ac_sid_sddl,
+        req.default,
+        req.rules.len(),
+        req.sandbox_pid,
+    ));
+    for (i, r) in req.rules.iter().enumerate() {
+        diag::emit(format!("  rule[{i}] = {r:?}"));
+    }
+    match engine.add_policy(&req.ac_sid_sddl, req.default, &req.rules) {
+        Ok((policy_id, filters_installed)) => {
+            log::info(&format!(
+                "  -> policy_id={policy_id} filters_installed={filters_installed}"
+            ));
+            diag::emit(format!(
+                "  -> policy_id={policy_id} filters_installed={filters_installed}"
+            ));
+            lifetime::track(engine.clone(), policy_id, req.sandbox_pid);
+            Response::AddPolicy(AddPolicyResponse {
+                policy_id,
+                filters_installed,
+            })
+        }
+        Err(e) => {
+            log::warn(&format!("  -> error: {e}"));
+            diag::emit(format!("  -> AddPolicy error: {e}"));
+            Response::Error(e)
         }
     }
+}
 
-    fn handle_add(&self, req: AddPolicyRequest, caller_pid: u32) -> Response {
-        if req.rules.len() > MAX_RULES_PER_POLICY {
-            return Response::Error(ServiceError::TooManyRules {
-                max: MAX_RULES_PER_POLICY as u32,
-                got: req.rules.len() as u32,
-            });
+fn handle_remove_impl(engine: &Arc<WfpEngine>, req: RemovePolicyRequest, caller_pid: u32) -> Response {
+    log::info(&format!(
+        "RemovePolicy caller_pid={caller_pid} policy_id={}",
+        req.policy_id
+    ));
+    diag::emit(format!(
+        "RemovePolicy caller_pid={caller_pid} policy_id={}",
+        req.policy_id
+    ));
+    lifetime::cancel(req.policy_id);
+    match engine.remove_policy(req.policy_id) {
+        Ok(filters_removed) => {
+            log::info(&format!("  -> filters_removed={filters_removed}"));
+            diag::emit(format!("  -> filters_removed={filters_removed}"));
+            Response::RemovePolicy(RemovePolicyResponse { filters_removed })
         }
-        log::info(&format!(
-            "AddPolicy caller_pid={caller_pid} ac_sid={} default={:?} rules={} sandbox_pid={}",
-            req.ac_sid_sddl,
-            req.default,
-            req.rules.len(),
-            req.sandbox_pid,
-        ));
-        diag::emit(format!(
-            "AddPolicy caller_pid={caller_pid} ac_sid={} default={:?} rules={} sandbox_pid={}",
-            req.ac_sid_sddl,
-            req.default,
-            req.rules.len(),
-            req.sandbox_pid,
-        ));
-        for (i, r) in req.rules.iter().enumerate() {
-            diag::emit(format!("  rule[{i}] = {r:?}"));
-        }
-        match self.engine.add_policy(&req.ac_sid_sddl, req.default, &req.rules) {
-            Ok((policy_id, filters_installed)) => {
-                log::info(&format!(
-                    "  -> policy_id={policy_id} filters_installed={filters_installed}"
-                ));
-                diag::emit(format!(
-                    "  -> policy_id={policy_id} filters_installed={filters_installed}"
-                ));
-                Response::AddPolicy(AddPolicyResponse {
-                    policy_id,
-                    filters_installed,
-                })
-            }
-            Err(e) => {
-                log::warn(&format!("  -> error: {e}"));
-                diag::emit(format!("  -> AddPolicy error: {e}"));
-                Response::Error(e)
-            }
-        }
-    }
-
-    fn handle_remove(&self, req: RemovePolicyRequest, caller_pid: u32) -> Response {
-        log::info(&format!(
-            "RemovePolicy caller_pid={caller_pid} policy_id={}",
-            req.policy_id
-        ));
-        diag::emit(format!(
-            "RemovePolicy caller_pid={caller_pid} policy_id={}",
-            req.policy_id
-        ));
-        match self.engine.remove_policy(req.policy_id) {
-            Ok(filters_removed) => {
-                log::info(&format!("  -> filters_removed={filters_removed}"));
-                diag::emit(format!("  -> filters_removed={filters_removed}"));
-                Response::RemovePolicy(RemovePolicyResponse { filters_removed })
-            }
-            Err(e) => {
-                log::warn(&format!("  -> error: {e}"));
-                diag::emit(format!("  -> RemovePolicy error: {e}"));
-                Response::Error(e)
-            }
+        Err(e) => {
+            log::warn(&format!("  -> error: {e}"));
+            diag::emit(format!("  -> RemovePolicy error: {e}"));
+            Response::Error(e)
         }
     }
 }

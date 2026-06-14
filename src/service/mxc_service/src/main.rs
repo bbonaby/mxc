@@ -21,7 +21,9 @@ use clap::Parser;
 
 mod diag;
 mod grant;
+mod identity;
 mod ipc;
+mod lifetime;
 mod log;
 mod wfp;
 
@@ -89,6 +91,7 @@ fn run_console() -> anyhow::Result<()> {
     let shutdown = Arc::new(AtomicBool::new(false));
 
     let server = ipc::Server::new(Arc::clone(&engine), Arc::clone(&shutdown));
+    start_rpc(Arc::clone(&engine));
     let shutdown_for_ctrlc = Arc::clone(&shutdown);
     ctrlc::set_handler(move || {
         log::info("ctrl-c received, shutting down");
@@ -170,6 +173,7 @@ mod service {
 
         let engine = Arc::new(WfpEngine::open()?);
         let server = ipc::Server::new(Arc::clone(&engine), Arc::clone(&shutdown));
+        super::start_rpc(Arc::clone(&engine));
 
         diag::init();
         diag::emit(format!(
@@ -211,3 +215,22 @@ mod service {
 // Silence unused-import warning under cross-builds.
 #[allow(dead_code)]
 fn _link_only(_: OsString) {}
+
+#[cfg(windows)]
+fn start_rpc(engine: Arc<WfpEngine>) {
+    let engine_for_rpc = engine.clone();
+    match mxc_service_rpc::server::start(move |req| {
+        ipc::dispatch_request(req, &engine_for_rpc, 0)
+    }) {
+        Ok(()) => {
+            log::info("LRPC listener registered on ncalrpc:mxc-service");
+            diag::emit("LRPC listener registered on ncalrpc:mxc-service");
+        }
+        Err(e) => {
+            log::warn(&format!("LRPC listener failed to start ({e:#}); named-pipe still active"));
+            diag::emit(format!(
+                "LRPC listener failed to start ({e:#}); named-pipe still active"
+            ));
+        }
+    }
+}

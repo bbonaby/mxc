@@ -13,6 +13,7 @@ path = "src/bin/mxc-net.rs"
 [dependencies]
 clap = { workspace = true }
 mxc_service_proto = { workspace = true }
+mxc_service_rpc = { workspace = true, features = ["client"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

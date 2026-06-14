@@ -41,12 +41,9 @@ impl NetworkManager {
         self.broker.is_active()
     }
 
-    /// Start the proxy (if configured) and ask the broker to install
-    /// per-host WFP filters scoped to the AppContainer SID.
-    ///
-    /// Fails if the broker rejects the policy. There is no firewall
-    /// fallback — see the module docstring.
-    pub fn start(
+    /// Start the proxy (if configured). Must run BEFORE the sandbox
+    /// process is created so the proxy URL is in the child's env block.
+    pub fn start_proxy(
         &mut self,
         principal_id: &str,
         container_name: &str,
@@ -63,17 +60,28 @@ impl NetworkManager {
                 logger,
             )?;
         }
+        Ok(())
+    }
 
-        if let Err(err) =
-            self.broker
-                .start(principal_id, std::process::id(), policy, logger)
-        {
+    /// Install per-host WFP filters via the Tier 2 broker. MUST be
+    /// called AFTER `CreateProcessW(CREATE_SUSPENDED)` and BEFORE
+    /// `ResumeThread`. Filters are scoped to the AppContainer SID, and
+    /// the broker also wires lifetime cleanup to `sandbox_pid` so a
+    /// crash between resume and explicit `stop_all` doesn't leak
+    /// policy.
+    pub fn start_broker(
+        &mut self,
+        principal_id: &str,
+        sandbox_pid: u32,
+        policy: &ContainerPolicy,
+        logger: &mut Logger,
+    ) -> Result<(), WxcError> {
+        if let Err(err) = self.broker.start(principal_id, sandbox_pid, policy, logger) {
             if self.proxy_coordinator.is_active() {
                 self.proxy_coordinator.stop(logger);
             }
             return Err(err);
         }
-
         Ok(())
     }
 

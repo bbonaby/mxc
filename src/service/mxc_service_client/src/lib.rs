@@ -38,15 +38,35 @@ pub enum ClientError {
 }
 
 pub struct Client {
-    pipe: OwnedHandle,
+    transport: Transport,
+}
+
+enum Transport {
+    Rpc(mxc_service_rpc::client::Client),
+    Pipe(OwnedHandle),
 }
 
 impl Client {
+    /// Try LRPC first (production transport per spec §6.7); fall back
+    /// to named pipe if LRPC isn't available (e.g., service was built
+    /// without the RPC listener registered).
     pub fn connect() -> Result<Self, ClientError> {
-        Self::connect_with_timeout(Duration::from_secs(5))
+        match mxc_service_rpc::client::Client::connect() {
+            Ok(c) => Ok(Self { transport: Transport::Rpc(c) }),
+            Err(_) => Self::connect_pipe(Duration::from_secs(5)),
+        }
     }
 
     pub fn connect_with_timeout(timeout: Duration) -> Result<Self, ClientError> {
+        match mxc_service_rpc::client::Client::connect() {
+            Ok(c) => Ok(Self { transport: Transport::Rpc(c) }),
+            Err(_) => Self::connect_pipe(timeout),
+        }
+    }
+
+    /// Force the named-pipe transport (used by `mxc-net --pipe` for
+    /// transport-comparison diagnostics).
+    pub fn connect_pipe(timeout: Duration) -> Result<Self, ClientError> {
         let name = HSTRING::from(PIPE_NAME);
         unsafe {
             let _ = WaitNamedPipeW(PCWSTR(name.as_ptr()), timeout.as_millis() as u32);
@@ -67,7 +87,7 @@ impl Client {
             ClientError::Open(format!("CreateFileW: {e} ({err:?})"))
         })?;
         Ok(Self {
-            pipe: unsafe { OwnedHandle::from_raw_handle(handle.0 as RawHandle) },
+            transport: Transport::Pipe(unsafe { OwnedHandle::from_raw_handle(handle.0 as RawHandle) }),
         })
     }
 
@@ -109,9 +129,16 @@ impl Client {
     }
 
     fn request(&mut self, req: Request) -> Result<Response, ClientError> {
-        let mut io = PipeIo(&self.pipe);
-        write_frame(&mut io, &req).map_err(|e| ClientError::Frame(e.to_string()))?;
-        read_frame(&mut io).map_err(|e| ClientError::Frame(e.to_string()))
+        match &mut self.transport {
+            Transport::Rpc(c) => c
+                .call(&req)
+                .map_err(|e| ClientError::Frame(format!("lrpc: {e:#}"))),
+            Transport::Pipe(pipe) => {
+                let mut io = PipeIo(pipe);
+                write_frame(&mut io, &req).map_err(|e| ClientError::Frame(e.to_string()))?;
+                read_frame(&mut io).map_err(|e| ClientError::Frame(e.to_string()))
+            }
+        }
     }
 }
 

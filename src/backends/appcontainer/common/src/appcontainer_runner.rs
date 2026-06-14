@@ -419,6 +419,8 @@ impl AppContainerScriptRunner {
     fn run_internal_impl(
         &self,
         request: &ExecutionRequest,
+        principal_id: &str,
+        network_manager: &mut crate::network_manager::NetworkManager,
         logger: &mut Logger,
     ) -> Result<ScriptResponse, WxcError> {
         // --- Validate permissiveLearningMode ---
@@ -818,6 +820,23 @@ impl AppContainerScriptRunner {
         };
 
         // Resume the child now that UI restrictions are in place.
+        // BUT FIRST: install per-host WFP filters via the Tier 2 broker
+        // while the process is still suspended. This eliminates any
+        // race where the child could send a packet before policy is in
+        // place. Filter lifetime is also bound to `pi.dwProcessId` so
+        // the broker auto-cleans on sandbox crash.
+        if let Err(e) = network_manager.start_broker(
+            principal_id,
+            pi.dwProcessId,
+            &request.policy,
+            logger,
+        ) {
+            unsafe {
+                let _ = TerminateProcess(process_handle.get(), u32::MAX);
+            }
+            return Err(e);
+        }
+
         // ResumeThread returns the previous suspend count (or u32::MAX on failure).
         let resume_result = unsafe { ResumeThread(thread_handle.get()) };
         if resume_result == u32::MAX {
@@ -897,8 +916,14 @@ impl AppContainerScriptRunner {
     }
 
     /// Execute the script inside the AppContainer, converting errors to ScriptResponse.
-    fn run_internal(&mut self, request: &ExecutionRequest, logger: &mut Logger) -> ScriptResponse {
-        match self.run_internal_impl(request, logger) {
+    fn run_internal(
+        &mut self,
+        request: &ExecutionRequest,
+        principal_id: &str,
+        network_manager: &mut crate::network_manager::NetworkManager,
+        logger: &mut Logger,
+    ) -> ScriptResponse {
+        match self.run_internal_impl(request, principal_id, network_manager, logger) {
             Ok(response) => response,
             Err(e) => ScriptResponse::error(&e.to_string()),
         }
@@ -993,7 +1018,7 @@ impl ScriptRunner for AppContainerScriptRunner {
         }
 
         let mut network_manager = NetworkManager::new();
-        match network_manager.start(
+        match network_manager.start_proxy(
             &principal_id,
             &self.app_container_name,
             &request.policy,
@@ -1009,7 +1034,7 @@ impl ScriptRunner for AppContainerScriptRunner {
         }
 
         let mut response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.run_internal(request, logger)
+            self.run_internal(request, &principal_id, &mut network_manager, logger)
         })) {
             Ok(r) => r,
             Err(_) => ScriptResponse::error("Unknown error during script execution."),

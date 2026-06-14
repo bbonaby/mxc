@@ -1,0 +1,38 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+//
+// Minimal LRPC interface for mxc-service. Production-grade transport
+// replacement for the named-pipe + CBOR substitute described in
+// service/README.md "Prototype shortcuts".
+//
+// Design notes:
+// - All request/response bodies are CBOR blobs (identical schemas to
+//   the named-pipe path). MIDL only marshals byte arrays + small
+//   primitives; we keep the schema in Rust.
+// - ncalrpc protseq + RPC_C_AUTHN_GSS_NEGOTIATE gives us caller-token
+//   visibility via RpcImpersonateClient on the server side.
+// - Endpoint "mxc-service" is the LRPC port name (kernel ALPC).
+
+import "wtypes.idl";
+
+[
+    uuid(2e7e3f2a-3b1f-4c5c-9b1d-7c4e0d0a91aa),
+    version(1.0),
+    pointer_default(unique)
+]
+interface IMxcService
+{
+    // Round-trip a CBOR-encoded Request and receive a CBOR-encoded
+    // Response. The single-call shape mirrors the named-pipe one-shot
+    // request/response so we can swap transports without changing
+    // handler code.
+    //
+    // Returns RPC status. Application-level errors are encoded inside
+    // the response_cbor body (Response::Error).
+    long RpcCall(
+        [in] handle_t binding,
+        [in] unsigned long request_len,
+        [in, size_is(request_len)] const byte* request_cbor,
+        [out] unsigned long* response_len,
+        [out, size_is(, *response_len)] byte** response_cbor);
+}
