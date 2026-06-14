@@ -918,10 +918,10 @@ impl ScriptRunner for AppContainerScriptRunner {
                 wxc_common::error::DENIED_PATHS_NOT_SUPPORTED_MSG,
             ));
         }
-        // Host lists are now serviced by the Tier 2 broker
-        // (`mxc-service`). We no longer reject them here; if the broker
-        // is unreachable, `network_manager` falls back to the legacy
-        // INetFwPolicy2 path or surfaces a clear error.
+        // Host lists are serviced by the Tier 2 broker (`mxc-service`).
+        // If the broker is unreachable, `NetworkManager::start` surfaces
+        // the error — there is no Windows-Firewall fallback (which would
+        // require wxc-exec to run elevated).
         Ok(())
     }
 

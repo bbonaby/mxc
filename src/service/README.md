@@ -141,8 +141,8 @@ What is **not** on this list — implemented as designed:
 - **Client wiring.** `wxc-exec`'s AppContainer backend talks to the broker
   through `mxc_service_client`. No second binary is needed — `blockedHosts` /
   `allowedHosts` flow straight from the script config through the broker into
-  WFP. The legacy INetFwPolicy2 path remains as a fallback if the service is
-  unreachable.
+  WFP. There is **no** Windows-Firewall (`INetFwPolicy2`) fallback: that path
+  required `wxc-exec` to run elevated, which defeats Tier 2's whole point.
 - **Diagnostic surface.** The broker emits a line on the diagnostic-console
   named pipe for every IPC connect, AddPolicy / RemovePolicy, and rule
   installed. Run `mxc-diagnostic-console.exe` elevated alongside any test to

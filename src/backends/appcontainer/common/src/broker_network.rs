@@ -22,7 +22,7 @@ use mxc_service_proto::{DefaultPolicy, PolicyId, Rule, RuleVerb, Transport};
 
 use wxc_common::error::WxcError;
 use wxc_common::logger::Logger;
-use wxc_common::models::{ContainerPolicy, NetworkPolicy};
+use wxc_common::models::{ContainerPolicy, NetworkEnforcementMode, NetworkPolicy};
 
 /// Per-sandbox broker session. Lives alongside `NetworkManager`.
 pub struct BrokerSession {
@@ -35,9 +35,21 @@ impl BrokerSession {
     }
 
     /// True iff `policy` describes per-host filtering the broker can
-    /// implement on this host. Callers use this to decide whether to
-    /// route through the broker vs. the legacy `NetworkManager` path.
+    /// implement on this host. The caller's `NetworkManager` uses this
+    /// to decide whether to engage the broker at all.
+    ///
+    /// Returns false when the policy's enforcement mode is
+    /// capability-only (no firewall layer requested), even if host
+    /// lists are populated — that combination means "filter via
+    /// AppContainer capabilities only", and we honor it.
     pub fn applies_to(policy: &ContainerPolicy) -> bool {
+        let firewall_requested = matches!(
+            policy.network_enforcement_mode,
+            NetworkEnforcementMode::Firewall | NetworkEnforcementMode::Both
+        );
+        if !firewall_requested {
+            return false;
+        }
         !policy.allowed_hosts.is_empty()
             || !policy.blocked_hosts.is_empty()
             || policy.default_network_policy == NetworkPolicy::Block
@@ -202,6 +214,17 @@ mod tests {
         let mut p = empty_policy();
         p.blocked_hosts = vec!["8.8.8.8".into()];
         assert!(BrokerSession::applies_to(&p));
+    }
+
+    #[test]
+    fn applies_to_false_for_capabilities_mode_even_with_block_lists() {
+        let mut p = empty_policy();
+        p.network_enforcement_mode = NetworkEnforcementMode::Capabilities;
+        p.blocked_hosts = vec!["8.8.8.8".into()];
+        assert!(
+            !BrokerSession::applies_to(&p),
+            "capabilities-only mode means no firewall — broker should stay out"
+        );
     }
 
     #[test]
