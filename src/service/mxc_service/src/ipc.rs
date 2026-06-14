@@ -94,18 +94,20 @@ impl Server {
         }
 
         let caller_pid = client_pid(pipe.as_raw_handle());
+        log::info(&format!("client connected pid={caller_pid}"));
+
+        let request: Request = read_frame(&mut PipeIo(&pipe))
+            .map_err(|e| anyhow::anyhow!("read_frame: {e}"))?;
+
+        // ImpersonateNamedPipeClient requires that the server has read
+        // data from the pipe at least once (otherwise it fails with
+        // ERROR_CANNOT_IMPERSONATE 0x558). Capture identity *after* the
+        // first read.
         let caller_id = identity::capture(&pipe);
-        log::info(&format!(
-            "client connected pid={caller_pid} user_sid={}",
-            caller_id.user_sid
-        ));
         diag::emit(format!(
             "ipc: client connected pid={caller_pid} user_sid={}",
             caller_id.user_sid
         ));
-
-        let request: Request = read_frame(&mut PipeIo(&pipe))
-            .map_err(|e| anyhow::anyhow!("read_frame: {e}"))?;
 
         let response = self.dispatch(request, caller_pid);
 
@@ -192,12 +194,18 @@ fn handle_remove_impl(engine: &Arc<WfpEngine>, req: RemovePolicyRequest, caller_
         "RemovePolicy caller_pid={caller_pid} policy_id={}",
         req.policy_id
     ));
-    lifetime::cancel(req.policy_id);
+    let was_tracked = lifetime::cancel(req.policy_id);
     match engine.remove_policy(req.policy_id) {
         Ok(filters_removed) => {
             log::info(&format!("  -> filters_removed={filters_removed}"));
             diag::emit(format!("  -> filters_removed={filters_removed}"));
             Response::RemovePolicy(RemovePolicyResponse { filters_removed })
+        }
+        Err(ServiceError::UnknownPolicy(_)) if !was_tracked => {
+            // Most likely the lifetime watcher already auto-removed it after
+            // the sandbox exited; treat as success.
+            diag::emit("  -> already removed (auto-cleanup raced explicit call)");
+            Response::RemovePolicy(RemovePolicyResponse { filters_removed: 0 })
         }
         Err(e) => {
             log::warn(&format!("  -> error: {e}"));

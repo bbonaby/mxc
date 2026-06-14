@@ -77,10 +77,15 @@ pub fn track(engine: Arc<WfpEngine>, policy_id: PolicyId, sandbox_pid: u32) {
 
 /// Stop watching a policy without removing the WFP filters. Called by
 /// the IPC `RemovePolicy` handler so the watcher doesn't race with the
-/// explicit cleanup.
-pub fn cancel(policy_id: PolicyId) {
+/// explicit cleanup. Returns true iff a tracked watcher was found and
+/// cancelled — RemovePolicy uses this to distinguish "racing with our
+/// own auto-cleanup" (false) from "we cancelled a live watcher" (true).
+pub fn cancel(policy_id: PolicyId) -> bool {
     if let Some(w) = watchers().lock().unwrap().remove(&policy_id) {
         w.cancel.store(true, Ordering::SeqCst);
+        true
+    } else {
+        false
     }
 }
 
@@ -150,8 +155,9 @@ fn wait_event_driven(pid: u32, cancel: &Arc<AtomicBool>) -> WaitOutcome {
         Ok(_) => return WaitOutcome::AccessDenied,
         Err(e) => {
             let code = e.code().0 as u32;
-            // 5 = ERROR_ACCESS_DENIED. Fall back to polling instead of giving up.
-            if code == 5 {
+            // 5 = ERROR_ACCESS_DENIED. windows-rs may return either the raw
+            // Win32 code or HRESULT_FROM_WIN32(5) = 0x80070005.
+            if code == 5 || code == 0x80070005 {
                 return WaitOutcome::AccessDenied;
             }
             return WaitOutcome::OpenFailed(code);

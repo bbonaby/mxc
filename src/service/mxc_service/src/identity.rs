@@ -54,21 +54,24 @@ impl CallerIdentity {
 pub fn capture(pipe: &OwnedHandle) -> CallerIdentity {
     let pipe_handle = HANDLE(pipe.as_raw_handle() as *mut c_void);
     let impersonated = unsafe { ImpersonateNamedPipeClient(pipe_handle) };
-    if impersonated.is_err() {
+    if let Err(e) = impersonated {
+        crate::diag::emit(format!("identity: ImpersonateNamedPipeClient failed: {e:?}"));
         return CallerIdentity::unknown();
     }
 
     let id = query_thread_token_user();
 
-    // RevertToSelf failure here is catastrophic — we'd leave the IPC
-    // thread impersonating the caller. We swallow the Result because
-    // the windows-rs binding is Ok-or-panic-on-bool, but log via the
-    // Err path for defense in depth.
     unsafe {
         let _ = RevertToSelf();
     }
 
-    id.unwrap_or_else(CallerIdentity::unknown)
+    match id {
+        Some(i) => i,
+        None => {
+            crate::diag::emit("identity: OpenThreadToken / GetTokenInformation returned None");
+            CallerIdentity::unknown()
+        }
+    }
 }
 
 fn query_thread_token_user() -> Option<CallerIdentity> {
