@@ -45,4 +45,12 @@ output
 pathrel_test.exe
 
 # Claude
-.claude/
+.claude/out/
+tests/playground/dist/
+tests/playground/node_modules/
+sdk/node_modules/
+sdk/dist/
+installer/mxc-service-msi/*.msi
+installer/mxc-service-msi/*.wixpdb
+installer/mxc-service-msi/obj/
+tests/src/target/

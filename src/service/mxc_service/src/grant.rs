@@ -26,27 +26,25 @@ use std::ffi::c_void;
 use std::ptr;
 
 use anyhow::{bail, Context};
-use windows::core::{HSTRING, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{
-    GetLastError, LocalFree, ERROR_INSUFFICIENT_BUFFER, HANDLE, HLOCAL,
-};
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::{LocalFree, HANDLE, HLOCAL};
 use windows::Win32::NetworkManagement::WindowsFilteringPlatform::{
     FwpmEngineClose0, FwpmEngineGetSecurityInfo0, FwpmEngineOpen0,
     FwpmEngineSetSecurityInfo0, FWPM_ACTRL_ADD, FWPM_ACTRL_ADD_LINK, FWPM_ACTRL_ENUM,
     FWPM_ACTRL_OPEN, FWPM_ACTRL_READ,
 };
 use windows::Win32::Security::Authorization::{
-    SetEntriesInAclW, ACCESS_MODE, EXPLICIT_ACCESS_W, GRANT_ACCESS, MULTIPLE_TRUSTEE_OPERATION,
-    NO_MULTIPLE_TRUSTEE, REVOKE_ACCESS, TRUSTEE_FORM, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN,
-    TRUSTEE_TYPE, TRUSTEE_W,
+    SetEntriesInAclW, ACCESS_MODE, EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE,
+    REVOKE_ACCESS, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows::Win32::Security::{
-    LookupAccountNameW, ACE_FLAGS, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
-    NO_INHERITANCE, OBJECT_INHERIT_ACE, PSECURITY_DESCRIPTOR, PSID, SID, SID_NAME_USE,
+    ACE_FLAGS, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, NO_INHERITANCE,
+    OBJECT_INHERIT_ACE, PSECURITY_DESCRIPTOR, PSID,
 };
 use windows::Win32::Storage::FileSystem::DELETE as FILE_DELETE;
+use windows::core::PWSTR;
 
-const SERVICE_ACCOUNT: &str = "NT SERVICE\\mxc-service";
+const SERVICE_NAME_FOR_SID: &str = "mxc-service";
 
 const RIGHTS: u32 =
     FWPM_ACTRL_OPEN | FWPM_ACTRL_ADD | FWPM_ACTRL_ADD_LINK | FWPM_ACTRL_ENUM | FWPM_ACTRL_READ;
@@ -64,7 +62,7 @@ pub fn uninstall_grant() -> anyhow::Result<()> {
 }
 
 fn modify_engine_ace(mode: ACCESS_MODE) -> anyhow::Result<()> {
-    let sid = SidBuf::lookup(SERVICE_ACCOUNT)?;
+    let sid = SidBuf::for_service(SERVICE_NAME_FOR_SID);
     let engine = open_engine()?;
 
     let result: anyhow::Result<()> = (|| {
@@ -141,7 +139,9 @@ fn modify_engine_ace(mode: ACCESS_MODE) -> anyhow::Result<()> {
 
 fn open_engine() -> anyhow::Result<HANDLE> {
     let mut engine = HANDLE::default();
-    let rc = unsafe { FwpmEngineOpen0(PCWSTR::null(), 0, None, None, &mut engine) };
+    // RPC_C_AUTHN_WINNT = 10. Required by FwpmEngineOpen0; 0 (RPC_C_AUTHN_NONE)
+    // yields ERROR_NOT_SUPPORTED (0x32) against the BFE local RPC endpoint.
+    let rc = unsafe { FwpmEngineOpen0(PCWSTR::null(), 10, None, None, &mut engine) };
     if rc != 0 {
         bail!("FwpmEngineOpen0 failed: Win32 0x{rc:08x}");
     }
@@ -152,44 +152,47 @@ fn open_engine() -> anyhow::Result<HANDLE> {
 struct SidBuf(Vec<u8>);
 
 impl SidBuf {
-    fn lookup(account: &str) -> anyhow::Result<Self> {
-        let name = HSTRING::from(account);
-        let mut sid_size: u32 = 0;
-        let mut dom_size: u32 = 0;
-        let mut sid_use = SID_NAME_USE::default();
-        let res = unsafe {
-            LookupAccountNameW(
-                PCWSTR::null(),
-                PCWSTR(name.as_ptr()),
-                None,
-                &mut sid_size,
-                None,
-                &mut dom_size,
-                &mut sid_use,
-            )
-        };
-        if res.is_ok() {
-            bail!("LookupAccountNameW unexpectedly succeeded on sizing call");
+    /// Build the per-service SID for `service_name` deterministically.
+    ///
+    /// Format: `S-1-5-80-{h0}-{h1}-{h2}-{h3}-{h4}` where the five 32-bit
+    /// chunks are little-endian reads from SHA-1(uppercase service name
+    /// encoded as UTF-16LE). This matches the algorithm Windows uses
+    /// to generate per-service SIDs (see MSDN "Service Security and
+    /// Access Rights" + `SERVICE_SID_TYPE_RESTRICTED` docs).
+    ///
+    /// Computing instead of `LookupAccountNameW` because the LSA
+    /// account name `NT SERVICE\<name>` is not always resolvable
+    /// immediately after `CreateService` (the MSI custom action sees
+    /// `ERROR_NONE_MAPPED` before LSA has cached the freshly-created
+    /// SID).
+    fn for_service(service_name: &str) -> Self {
+        use sha1::{Digest, Sha1};
+        let upper = service_name.to_uppercase();
+        let utf16_le: Vec<u8> = upper
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let hash = Sha1::digest(&utf16_le); // 20 bytes
+
+        // SID byte layout:
+        //   [Revision=1][SubAuthCount=6][IdentifierAuthority(6 BE bytes)]
+        //   [SubAuthority(0..6) each 4 LE bytes]
+        // SubAuthorities = [SECURITY_SERVICE_ID_BASE_RID=80, h0..h4]
+        let mut buf = Vec::with_capacity(8 + 6 * 4);
+        buf.push(1); // Revision
+        buf.push(6); // SubAuthorityCount: 1 base RID + 5 hash chunks
+        buf.extend_from_slice(&[0, 0, 0, 0, 0, 5]); // SECURITY_NT_AUTHORITY in BE
+        buf.extend_from_slice(&80u32.to_le_bytes()); // base RID
+        for i in 0..5 {
+            let chunk = u32::from_le_bytes([
+                hash[i * 4],
+                hash[i * 4 + 1],
+                hash[i * 4 + 2],
+                hash[i * 4 + 3],
+            ]);
+            buf.extend_from_slice(&chunk.to_le_bytes());
         }
-        let last = unsafe { GetLastError() };
-        if last != ERROR_INSUFFICIENT_BUFFER {
-            bail!("LookupAccountNameW sizing for {account}: {last:?}");
-        }
-        let mut sid_buf = vec![0u8; sid_size as usize];
-        let mut dom_buf = vec![0u16; dom_size as usize];
-        unsafe {
-            LookupAccountNameW(
-                PCWSTR::null(),
-                PCWSTR(name.as_ptr()),
-                Some(PSID(sid_buf.as_mut_ptr() as *mut c_void)),
-                &mut sid_size,
-                Some(PWSTR(dom_buf.as_mut_ptr())),
-                &mut dom_size,
-                &mut sid_use,
-            )
-            .with_context(|| format!("LookupAccountNameW failed for {account}"))?;
-        }
-        Ok(SidBuf(sid_buf))
+        SidBuf(buf)
     }
 
     fn as_psid(&self) -> PSID {
@@ -211,9 +214,35 @@ impl Drop for LocalAllocOwned {
 // Quiet unused-import warnings when modules elsewhere don't reach grant code.
 #[allow(dead_code)]
 fn _imports() {
-    let _ = SID_NAME_USE::default();
-    let _ = TRUSTEE_FORM::default();
-    let _ = TRUSTEE_TYPE::default();
-    let _: *mut SID = ptr::null_mut();
-    let _: MULTIPLE_TRUSTEE_OPERATION = NO_MULTIPLE_TRUSTEE;
+    let _ = NO_MULTIPLE_TRUSTEE;
+    let _ = TRUSTEE_IS_SID;
+    let _ = TRUSTEE_IS_UNKNOWN;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_sid_layout_is_plausible() {
+        let sid = SidBuf::for_service("mxc-service");
+        // Revision=1, SubAuthCount=6, IdAuth bytes 0,0,0,0,0,5,
+        // SubAuthorities = 4 bytes * 6 = 24
+        assert_eq!(sid.0.len(), 8 + 24);
+        assert_eq!(sid.0[0], 1); // revision
+        assert_eq!(sid.0[1], 6); // sub-auth count
+        assert_eq!(&sid.0[2..8], &[0, 0, 0, 0, 0, 5]); // SECURITY_NT_AUTHORITY
+        // First sub-authority is 80 (SECURITY_SERVICE_ID_BASE_RID)
+        let base = u32::from_le_bytes([sid.0[8], sid.0[9], sid.0[10], sid.0[11]]);
+        assert_eq!(base, 80);
+    }
+
+    #[test]
+    fn service_sid_is_case_insensitive() {
+        let a = SidBuf::for_service("mxc-service");
+        let b = SidBuf::for_service("MXC-Service");
+        let c = SidBuf::for_service("MXC-SERVICE");
+        assert_eq!(a.0, b.0);
+        assert_eq!(a.0, c.0);
+    }
 }

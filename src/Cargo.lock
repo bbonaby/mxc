@@ -1494,6 +1494,7 @@ dependencies = [
  "mxc_service_proto",
  "serde",
  "serde_json",
+ "sha1",
  "thiserror",
  "uuid",
  "windows",
