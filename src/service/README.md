@@ -148,20 +148,39 @@ What is **not** on this list — implemented as designed:
   installed. Run `mxc-diagnostic-console.exe` elevated alongside any test to
   watch broker activity live.
 
-## Things this prototype does **not** prove
+## What this prototype now proves (was previously open)
 
-- That the named-pipe trust boundary equals LRPC's — no RPC handle transfer
-  for `sandboxProcess`, no RPC call attributes, no per-call caller
-  authentication shape.
-- That MXC filters dominate system-origin filters during BFE arbitration
-  (the open question from the AC↔AC loopback investigation). Outbound
-  `ALE_AUTH_CONNECT_V4` is the most favorable layer for our user-mode
-  PERMITs, but this needs empirical validation on a VM with real
-  `connect()` calls and `netsh wfp capture`.
-- The fully-coupled sandbox lifecycle (SDK creates sandbox suspended →
-  service applies policy → SDK resumes). The broker is called from
-  `NetworkManager::start`, after the AC SID is known; threading it into
-  the `start_sandbox` suspended-process flow is the next milestone.
+- **LRPC transport** (spec §6.7): the broker registers an LRPC
+  interface on `ncalrpc:mxc-service` via MIDL-generated stubs (see
+  `mxc_service_rpc/`). Clients prefer LRPC and fall back to the
+  named-pipe path. Confirmed end-to-end on a VM with the broker line
+  `LRPC listener registered on ncalrpc:mxc-service`.
+- **Sandbox lifecycle binding** (spec §3.2): broker is now called from
+  `appcontainer_runner::run_internal_impl` between
+  `CreateProcessW(CREATE_SUSPENDED)` and `ResumeThread`, with the real
+  `pi.dwProcessId` passed as `sandbox_pid`. Filter lifetime is bound
+  to the sandbox PID via `lifetime.rs`: when the sandbox terminates,
+  the broker auto-issues `RemovePolicy` (verified by the diag line
+  `lifetime: sandbox pid=N exited → auto-RemovePolicy`).
+- **Per-call caller identity**: best-effort `ImpersonateNamedPipeClient`
+  + `OpenThreadToken` capture the caller's user SID. Logged only,
+  not used for trust decisions (the production design needs
+  Authenticode caller verification, which remains a separate pass).
+
+## Things this prototype still does **not** prove
+
+- That MXC user-mode PERMITs at `FWPM_LAYER_ALE_AUTH_CONNECT_V4`
+  dominate the system-origin filter 71655 in BFE arbitration for
+  AppContainer↔AppContainer loopback. `Test-WfpArbitration.ps1`
+  exercises a single-AC → closed-loopback-port baseline (which is
+  *not* gated by filter 71655 — the target isn't an AC); a faithful
+  AC↔AC test requires standing up a listener inside a second AC,
+  which is out of scope for the script harness.
+- That the named-pipe-fallback transport is equivalent to LRPC for
+  caller-token shape. Identity capture works on both, but
+  `OpenThreadToken(OpenAsSelf=true)` on a Negotiate-authenticated
+  LRPC call yields a richer impersonation token than the
+  named-pipe path; the prototype treats them as interchangeable.
 
 ## Testing
 
