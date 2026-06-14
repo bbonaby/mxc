@@ -17,6 +17,7 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Variant::VARIANT;
 use windows_core::Interface;
 
+use crate::broker_network::BrokerSession;
 use crate::proxy_coordinator::ProxyCoordinator;
 use wxc_common::error::WxcError;
 use wxc_common::logger::Logger;
@@ -34,6 +35,7 @@ pub struct NetworkManager {
     com_initialized: bool,
     wsa_initialized: bool,
     proxy_coordinator: ProxyCoordinator,
+    broker: BrokerSession,
 }
 
 impl NetworkManager {
@@ -44,6 +46,7 @@ impl NetworkManager {
             com_initialized: false,
             wsa_initialized: false,
             proxy_coordinator: ProxyCoordinator::new(),
+            broker: BrokerSession::new(),
         }
     }
 
@@ -215,11 +218,31 @@ impl NetworkManager {
             )?;
         }
 
-        if let Err(err) = self.apply_firewall_rules(principal_id, policy, logger) {
-            if self.proxy_coordinator.is_active() {
-                self.proxy_coordinator.stop(logger);
+        // Tier 2 broker first: per-host filtering via `mxc-service`.
+        // If the broker accepts the policy we skip the legacy Windows
+        // Firewall path entirely (filters are already installed).
+        let broker_handled = match self.broker.start(
+            principal_id,
+            std::process::id(),
+            policy,
+            logger,
+        ) {
+            Ok(handled) => handled,
+            Err(err) => {
+                logger.log_line(&format!(
+                    "broker unavailable, falling back to INetFwPolicy2: {err}"
+                ));
+                false
             }
-            return Err(err);
+        };
+
+        if !broker_handled {
+            if let Err(err) = self.apply_firewall_rules(principal_id, policy, logger) {
+                if self.proxy_coordinator.is_active() {
+                    self.proxy_coordinator.stop(logger);
+                }
+                return Err(err);
+            }
         }
 
         Ok(())
@@ -227,6 +250,9 @@ impl NetworkManager {
 
     /// Stop all network resources: firewall rules, proxy policy, test proxy.
     pub fn stop_all(&mut self, cleanup_policy: bool, logger: &mut Logger) {
+        if cleanup_policy {
+            self.broker.stop(logger);
+        }
         if self.rules_applied() && cleanup_policy {
             let _ = self.remove_firewall_rules(logger);
         }

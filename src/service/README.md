@@ -122,33 +122,46 @@ relax in this order. Each step is a one-character change to
 
 ## Prototype shortcuts
 
-These are deliberate deviations from the production design in spec §4.
-The §4.1 service identity is **not** on this list — it is implemented
-as designed.
+Deliberate deviations from the production design (spec §4) that remain
+in this prototype:
 
-| Production design               | Prototype substitute                                  | Why                                                                                                    |
-|---------------------------------|-------------------------------------------------------|--------------------------------------------------------------------------------------------------------|
-| **LRPC** (§6.7)                 | **Named pipe** `\\.\pipe\mxc-service` (CBOR framed)   | Same kernel-mediated local trust boundary. Pure-Rust LRPC binding is painful; named-pipe is one stdlib call. Transport is decoupled from wire format — LRPC swap touches only `mxc_service` transport. |
-| Authenticode caller verification | Caller PID/exe **logged only**, no trust decision    | Production-grade caller verification is its own design pass; documenting the gap is more useful for a prototype than half-implementing it. |
-| Engine handle duplicated into sandbox process (§3.2) — filter lifetime bound to sandbox | Filter lifetime bound to `mxc-service` process | Sandbox-handle anchoring depends on spec §8.3 PoC. Until then, `RemovePolicy` is the cleanup path; service crash also reaps everything (dynamic session). |
-| Provider + sublayer durable, recreated only on schema change | Dynamic-session provider + sublayer, recreated every service start | OK for prototype but means anything outside MXC cannot reference them by GUID across reboots. |
-| Production-grade caps           | `MAX_RULES_PER_POLICY = 256`, `MAX_ACTIVE_POLICIES = 64`, `MAX_MESSAGE_BYTES = 64 KiB` | Defensive against malformed clients. Numbers are starting points. |
+| Production design | Prototype substitute | Why |
+|---|---|---|
+| **LRPC** (§6.7) | **Named pipe** `\\.\pipe\mxc-service` (CBOR framed) | Same kernel-mediated local trust boundary. Transport is decoupled from the wire format, so an LRPC swap touches only `ipc.rs` + `mxc_service_client/lib.rs`. |
+| Authenticode caller verification | Caller PID/exe **logged only**, no trust decision | Caller verification is its own design pass (signed-binary policy, signer chain, revocation). Documenting the gap is more useful than half-implementing it. |
+| Engine handle duplicated into sandbox process (§3.2) — filter lifetime bound to sandbox | Filter lifetime bound to the `mxc-service` process | Sandbox-handle anchoring depends on the §8.3 PoC. Today `RemovePolicy` is the cleanup path; service exit also reaps everything (dynamic session). |
+| Durable provider + sublayer, recreated only on schema change | Dynamic-session provider + sublayer, recreated every service start | OK for a prototype but means no external consumer can reference them by GUID across reboots. |
+| `MAX_RULES_PER_POLICY = 256`, `MAX_ACTIVE_POLICIES = 64`, `MAX_MESSAGE_BYTES = 64 KiB` | (same — already prototype values) | Defensive against malformed clients. Numbers are starting points, not the final policy. |
 
+What is **not** on this list — implemented as designed:
+
+- **§4.1 service identity.** `NT AUTHORITY\LocalService`, `SERVICE_SID_TYPE_RESTRICTED`,
+  `SeChangeNotifyPrivilege`-only, deterministic per-service SID, inheritable
+  engine ACE. See "Service identity" above.
+- **Client wiring.** `wxc-exec`'s AppContainer backend talks to the broker
+  through `mxc_service_client`. No second binary is needed — `blockedHosts` /
+  `allowedHosts` flow straight from the script config through the broker into
+  WFP. The legacy INetFwPolicy2 path remains as a fallback if the service is
+  unreachable.
+- **Diagnostic surface.** The broker emits a line on the diagnostic-console
+  named pipe for every IPC connect, AddPolicy / RemovePolicy, and rule
+  installed. Run `mxc-diagnostic-console.exe` elevated alongside any test to
+  watch broker activity live.
 
 ## Things this prototype does **not** prove
 
-- That the named-pipe trust boundary equals LRPC's: it doesn't validate
-  RPC handle transfer for `sandboxProcess`, RPC call attributes, or per-call
-  caller authentication shape.
+- That the named-pipe trust boundary equals LRPC's — no RPC handle transfer
+  for `sandboxProcess`, no RPC call attributes, no per-call caller
+  authentication shape.
 - That MXC filters dominate system-origin filters during BFE arbitration
-  (the open question from the earlier AC↔AC loopback investigation).
-  Outbound `ALE_AUTH_CONNECT_V4` is the most favorable layer for our
-  user-mode PERMITs, but this needs **empirical** validation on a VM
-  with actual `connect()` calls and `netsh wfp capture`.
-- The end-to-end Tier 2 lifecycle (SDK creates sandbox suspended →
-  service applies policy → SDK resumes). The current playground panel
-  drives a known SID after the fact; integrating the call into the
-  AppContainer backend's `start_sandbox` path is the next milestone.
+  (the open question from the AC↔AC loopback investigation). Outbound
+  `ALE_AUTH_CONNECT_V4` is the most favorable layer for our user-mode
+  PERMITs, but this needs empirical validation on a VM with real
+  `connect()` calls and `netsh wfp capture`.
+- The fully-coupled sandbox lifecycle (SDK creates sandbox suspended →
+  service applies policy → SDK resumes). The broker is called from
+  `NetworkManager::start`, after the AC SID is known; threading it into
+  the `start_sandbox` suspended-process flow is the next milestone.
 
 ## Testing
 

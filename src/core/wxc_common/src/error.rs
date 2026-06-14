@@ -53,9 +53,3 @@ pub const DENIED_PATHS_NOT_SUPPORTED_MSG: &str =
     "filesystem.deniedPaths is not yet supported on Windows. Paths are denied by \
      default unless granted via readwritePaths or readonlyPaths. Remove deniedPaths, \
      or narrow readwritePaths/readonlyPaths to exclude the path you wanted to deny.";
-
-#[cfg(target_os = "windows")]
-pub const HOST_LISTS_NOT_SUPPORTED_MSG: &str =
-    "network.allowedHosts / network.blockedHosts are not yet supported on Windows. \
-     Remove the host list(s) and rely on network.defaultPolicy (allow / block) or a \
-     proxy instead.";

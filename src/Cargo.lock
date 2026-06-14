@@ -99,6 +99,8 @@ version = "0.7.0"
 dependencies = [
  "flatbuffers",
  "getrandom 0.2.17",
+ "mxc_service_client",
+ "mxc_service_proto",
  "sandbox_spec",
  "serde",
  "serde_json",

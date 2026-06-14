@@ -25,6 +25,8 @@ flatbuffers = { workspace = true }
 sandbox_spec = { workspace = true }
 widestring = { workspace = true }
 winreg = { workspace = true }
+mxc_service_client = { workspace = true }
+mxc_service_proto = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

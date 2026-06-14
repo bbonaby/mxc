@@ -539,11 +539,6 @@ impl ScriptRunner for BaseContainerRunner {
                 wxc_common::error::DENIED_PATHS_NOT_SUPPORTED_MSG,
             ));
         }
-        if !request.policy.allowed_hosts.is_empty() || !request.policy.blocked_hosts.is_empty() {
-            return Err(ScriptResponse::error(
-                wxc_common::error::HOST_LISTS_NOT_SUPPORTED_MSG,
-            ));
-        }
         Self::is_base_container_api_present().map_err(|e| {
             let hint = if !request.experimental_enabled {
                 format!(
@@ -1338,27 +1333,38 @@ mod tests {
     }
 
     #[test]
-    fn validate_runner_rejects_allowed_hosts() {
+    fn validate_runner_accepts_allowed_hosts() {
         let runner = BaseContainerRunner::new();
         let mut request = ExecutionRequest::default();
         request.policy.allowed_hosts = vec!["example.com".into()];
 
-        let err = runner
-            .validate_runner(&request)
-            .expect_err("allowedHosts is not yet supported");
-        assert!(err.error_message.contains("allowedHosts"));
+        // validate_runner may still fail if the BaseContainer API isn't
+        // present in this OS build, but the failure must NOT be about
+        // host lists — those are serviced by the Tier 2 broker.
+        if let Err(err) = runner.validate_runner(&request) {
+            assert!(
+                !err.error_message.contains("allowedHosts")
+                    && !err.error_message.contains("blockedHosts"),
+                "expected non-host-list failure, got: {}",
+                err.error_message
+            );
+        }
     }
 
     #[test]
-    fn validate_runner_rejects_blocked_hosts() {
+    fn validate_runner_accepts_blocked_hosts() {
         let runner = BaseContainerRunner::new();
         let mut request = ExecutionRequest::default();
         request.policy.blocked_hosts = vec!["bad.example.com".into()];
 
-        let err = runner
-            .validate_runner(&request)
-            .expect_err("blockedHosts is not yet supported");
-        assert!(err.error_message.contains("blockedHosts"));
+        if let Err(err) = runner.validate_runner(&request) {
+            assert!(
+                !err.error_message.contains("allowedHosts")
+                    && !err.error_message.contains("blockedHosts"),
+                "expected non-host-list failure, got: {}",
+                err.error_message
+            );
+        }
     }
 
     #[test]

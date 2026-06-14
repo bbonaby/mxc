@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Context;
 use clap::Parser;
 
+mod diag;
 mod grant;
 mod ipc;
 mod log;
@@ -79,6 +80,11 @@ fn main() {
 }
 
 fn run_console() -> anyhow::Result<()> {
+    diag::init();
+    diag::emit(format!(
+        "mxc-service starting (--console, pid={})",
+        std::process::id()
+    ));
     let engine = Arc::new(WfpEngine::open().context("WfpEngine::open")?);
     let shutdown = Arc::new(AtomicBool::new(false));
 
@@ -115,7 +121,7 @@ mod service {
         service_dispatcher,
     };
 
-    use super::{ipc, log, WfpEngine, SERVICE_NAME};
+    use super::{diag, ipc, log, WfpEngine, SERVICE_NAME};
 
     define_windows_service!(ffi_service_main, service_main);
 
@@ -164,6 +170,12 @@ mod service {
 
         let engine = Arc::new(WfpEngine::open()?);
         let server = ipc::Server::new(Arc::clone(&engine), Arc::clone(&shutdown));
+
+        diag::init();
+        diag::emit(format!(
+            "mxc-service running under SCM (pid={})",
+            std::process::id()
+        ));
 
         status_handle
             .set_service_status(ServiceStatus {

@@ -918,11 +918,10 @@ impl ScriptRunner for AppContainerScriptRunner {
                 wxc_common::error::DENIED_PATHS_NOT_SUPPORTED_MSG,
             ));
         }
-        if !request.policy.allowed_hosts.is_empty() || !request.policy.blocked_hosts.is_empty() {
-            return Err(ScriptResponse::error(
-                wxc_common::error::HOST_LISTS_NOT_SUPPORTED_MSG,
-            ));
-        }
+        // Host lists are now serviced by the Tier 2 broker
+        // (`mxc-service`). We no longer reject them here; if the broker
+        // is unreachable, `network_manager` falls back to the legacy
+        // INetFwPolicy2 path or surfaces a clear error.
         Ok(())
     }
 
@@ -1303,31 +1302,29 @@ mod tests {
     }
 
     #[test]
-    fn validate_runner_rejects_allowed_hosts() {
+    fn validate_runner_accepts_allowed_hosts() {
         let runner = AppContainerScriptRunner::new();
         let mut request = ExecutionRequest::default();
         request.policy.allowed_hosts = vec!["example.com".into()];
 
-        let err = runner
+        runner
             .validate_runner(&request)
-            .expect_err("allowedHosts is not yet supported");
-        assert!(err.error_message.contains("allowedHosts"));
+            .expect("allowedHosts is serviced by the Tier 2 broker");
     }
 
     #[test]
-    fn validate_runner_rejects_blocked_hosts() {
+    fn validate_runner_accepts_blocked_hosts() {
         let runner = AppContainerScriptRunner::new();
         let mut request = ExecutionRequest::default();
         request.policy.blocked_hosts = vec!["bad.example.com".into()];
 
-        let err = runner
-            .validate_runner(&request)
-            .expect_err("blockedHosts is not yet supported");
-        assert!(err.error_message.contains("blockedHosts"));
-    }
+        runner
+                .validate_runner(&request)
+                .expect("blockedHosts is serviced by the Tier 2 broker");
+        }
 
-    #[test]
-    fn validate_runner_accepts_empty_policy() {
+        #[test]
+        fn validate_runner_accepts_empty_policy() {
         let runner = AppContainerScriptRunner::new();
         let request = ExecutionRequest::default();
         assert!(runner.validate_runner(&request).is_ok());

@@ -40,6 +40,7 @@ use windows::Win32::System::Pipes::{
     PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 
+use crate::diag;
 use crate::log;
 use crate::wfp::WfpEngine;
 
@@ -92,6 +93,7 @@ impl Server {
 
         let caller_pid = client_pid(pipe.as_raw_handle());
         log::info(&format!("client connected pid={caller_pid}"));
+        diag::emit(format!("ipc: client connected pid={caller_pid}"));
 
         let request: Request = read_frame(&mut PipeIo(&pipe))
             .map_err(|e| anyhow::anyhow!("read_frame: {e}"))?;
@@ -134,9 +136,22 @@ impl Server {
             req.rules.len(),
             req.sandbox_pid,
         ));
+        diag::emit(format!(
+            "AddPolicy caller_pid={caller_pid} ac_sid={} default={:?} rules={} sandbox_pid={}",
+            req.ac_sid_sddl,
+            req.default,
+            req.rules.len(),
+            req.sandbox_pid,
+        ));
+        for (i, r) in req.rules.iter().enumerate() {
+            diag::emit(format!("  rule[{i}] = {r:?}"));
+        }
         match self.engine.add_policy(&req.ac_sid_sddl, req.default, &req.rules) {
             Ok((policy_id, filters_installed)) => {
                 log::info(&format!(
+                    "  -> policy_id={policy_id} filters_installed={filters_installed}"
+                ));
+                diag::emit(format!(
                     "  -> policy_id={policy_id} filters_installed={filters_installed}"
                 ));
                 Response::AddPolicy(AddPolicyResponse {
@@ -146,6 +161,7 @@ impl Server {
             }
             Err(e) => {
                 log::warn(&format!("  -> error: {e}"));
+                diag::emit(format!("  -> AddPolicy error: {e}"));
                 Response::Error(e)
             }
         }
@@ -156,13 +172,19 @@ impl Server {
             "RemovePolicy caller_pid={caller_pid} policy_id={}",
             req.policy_id
         ));
+        diag::emit(format!(
+            "RemovePolicy caller_pid={caller_pid} policy_id={}",
+            req.policy_id
+        ));
         match self.engine.remove_policy(req.policy_id) {
             Ok(filters_removed) => {
                 log::info(&format!("  -> filters_removed={filters_removed}"));
+                diag::emit(format!("  -> filters_removed={filters_removed}"));
                 Response::RemovePolicy(RemovePolicyResponse { filters_removed })
             }
             Err(e) => {
                 log::warn(&format!("  -> error: {e}"));
+                diag::emit(format!("  -> RemovePolicy error: {e}"));
                 Response::Error(e)
             }
         }
