@@ -35,6 +35,8 @@ members = [
     "service/mxc_service_rpc",
     "service/mxc_service",
     "service/mxc_service_client",
+    "service/mxc_wfp_sys",
+    "service/mxc_wfp",
 ]
 exclude = ["testing/fuzz"]
 resolver = "3"
@@ -118,6 +120,8 @@ mxc_build_common = { path = "core/mxc_build_common" }
 mxc_service_proto = { path = "service/mxc_service_proto" }
 mxc_service_rpc = { path = "service/mxc_service_rpc" }
 mxc_service_client = { path = "service/mxc_service_client" }
+mxc_wfp = { path = "service/mxc_wfp" }
+mxc_wfp_sys = { path = "service/mxc_wfp_sys" }
 ciborium = "0.2"
 windows-service = "0.7"
 ctrlc = "3"

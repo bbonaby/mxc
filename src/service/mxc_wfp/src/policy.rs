@@ -1,42 +1,23 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! WFP (Windows Filtering Platform) wrapper for `mxc-service`.
+//! Per-sandbox WFP policy manager.
 //!
-//! Implements spec §3.1 / §3.2 / §6.6: per-sandbox policies installed
-//! as filters at `FWPM_LAYER_ALE_AUTH_CONNECT_V4` / `_V6`, scoped to
-//! one AppContainer SID via `FWPM_CONDITION_ALE_PACKAGE_ID`.
+//! Implements spec §3.1 / §3.2 / §6.6: filters installed at
+//! `FWPM_LAYER_ALE_AUTH_CONNECT_V4` / `_V6`, scoped to one
+//! AppContainer SID via `FWPM_CONDITION_ALE_PACKAGE_ID`.
 //!
-//! ## Weight tiers (deterministic; design review item #4)
+//! Weight tiers (deterministic):
 //!
-//! Inside the MXC sublayer we use three explicit weight tiers so
-//! overlapping rules resolve deterministically:
+//! | Tier              | Weight        |
+//! |-------------------|---------------|
+//! | explicit `block`  | `0x2000_0000` |
+//! | explicit `allow`  | `0x1000_0000` |
+//! | default-deny      | `0x0000_0001` |
 //!
-//! | Tier                        | Weight        | Notes                                  |
-//! |-----------------------------|---------------|----------------------------------------|
-//! | explicit `block`            | `0x2000_0000` | Always wins inside our sublayer.       |
-//! | explicit `allow`            | `0x1000_0000` | Carves holes through the default-deny. |
-//! | catch-all `block` (deny)    | `0x0000_0001` | Only installed when default = block.   |
-//!
-//! Cross-sublayer arbitration is decided by the sublayer weight
-//! (`MXC_SUBLAYER_WEIGHT`) — note review item #3: this does **not**
-//! prove dominance over system-origin filters; that has to be
-//! verified empirically on the VM.
-//!
-//! ## Lifetime
-//!
-//! Filters are installed on a dynamic engine session. They disappear
-//! when `WfpEngine` is dropped (process death) or when
-//! `remove_policy` is called. Provider + sublayer are also created
-//! on the dynamic session (so they too disappear with us) — see
-//! review item #9; this is an intentional prototype choice. Promoting
-//! provider/sublayer to durable objects is future work.
-//!
-//! ## AddPolicy atomicity
-//!
-//! `add_policy` performs partial-failure rollback (review item #8):
-//! if filter *N* fails to install, filters `0..N` are deleted before
-//! returning the error so we never leave a half-installed policy.
+//! `add_policy` performs partial-failure rollback: if filter *N*
+//! fails to install, filters `0..N` are deleted before the error
+//! returns so we never leave a half-installed policy.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -44,20 +25,21 @@ use std::net::IpAddr;
 use std::sync::Mutex;
 
 use mxc_service_proto::{DefaultPolicy, PolicyId, Rule, RuleVerb, ServiceError, Transport};
-use windows::core::{w, GUID, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{
-    LocalFree, ERROR_SUCCESS, FWP_E_ALREADY_EXISTS, HANDLE, HLOCAL,
+use mxc_wfp_sys::{
+    convert_string_sid_to_sid, filter_add, filter_delete_by_id, local_free, provider_add,
+    sublayer_add, ERROR_SUCCESS, FWPM_ACTION0, FWPM_ACTION0_0, FWPM_CONDITION_ALE_PACKAGE_ID,
+    FWPM_CONDITION_IP_PROTOCOL, FWPM_CONDITION_IP_REMOTE_ADDRESS, FWPM_CONDITION_IP_REMOTE_PORT,
+    FWPM_DISPLAY_DATA0, FWPM_FILTER0, FWPM_FILTER0_0, FWPM_FILTER_CONDITION0, FWPM_FILTER_FLAGS,
+    FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWPM_LAYER_ALE_AUTH_CONNECT_V6, FWPM_PROVIDER0,
+    FWPM_SUBLAYER0, FWP_ACTION_BLOCK, FWP_ACTION_PERMIT, FWP_ACTION_TYPE, FWP_BYTE_BLOB,
+    FWP_CONDITION_VALUE0, FWP_CONDITION_VALUE0_0, FWP_E_ALREADY_EXISTS, FWP_EMPTY,
+    FWP_MATCH_EQUAL, FWP_SID, FWP_UINT16, FWP_UINT64, FWP_UINT8, FWP_V4_ADDR_AND_MASK,
+    FWP_V4_ADDR_MASK, FWP_V6_ADDR_AND_MASK, FWP_V6_ADDR_MASK, FWP_VALUE0, FWP_VALUE0_0, Guid,
+    PCWStr, PSid, PWStr,
 };
-use windows::Win32::NetworkManagement::WindowsFilteringPlatform::*;
-use windows::Win32::Security::Authorization::ConvertStringSidToSidW;
-use windows::Win32::Security::PSID;
-use windows::Win32::System::Rpc::RPC_C_AUTHN_WINNT;
 
-// Stable GUIDs owned by MXC. Changing them breaks upgrade paths.
-const MXC_PROVIDER_GUID: GUID = GUID::from_u128(0x7a3d1bbe_3f1e_4d7a_9c4e_5a36f51e9b21);
-const MXC_SUBLAYER_GUID: GUID = GUID::from_u128(0x7a3d1bbf_3f1e_4d7a_9c4e_5a36f51e9b22);
-
-const MXC_SUBLAYER_WEIGHT: u16 = 0x4000;
+use crate::engine::{win32_err, Engine, SessionKind};
+use crate::{MXC_PROVIDER_GUID, MXC_SUBLAYER_GUID, MXC_SUBLAYER_WEIGHT};
 
 const WEIGHT_EXPLICIT_BLOCK: u64 = 0x2000_0000;
 const WEIGHT_EXPLICIT_ALLOW: u64 = 0x1000_0000;
@@ -67,29 +49,27 @@ const WEIGHT_DEFAULT_DENY: u64 = 0x0000_0001;
 pub const MAX_ACTIVE_POLICIES: usize = 64;
 
 /// RAII guard around a SID allocated by `ConvertStringSidToSidW`
-/// (uses `LocalAlloc`; needs `LocalFree`).
-struct OwnedSid(PSID);
+/// (`LocalAlloc`-backed; needs `LocalFree`).
+struct OwnedSid(PSid);
 
 impl OwnedSid {
     fn from_sddl(sddl: &str) -> Result<Self, ServiceError> {
-        // AppContainer package SIDs start with `S-1-15-2-`. Reject
-        // anything else early — design review item #8.
         if !sddl.starts_with("S-1-15-2-") {
             return Err(ServiceError::InvalidAcSid(sddl.into()));
         }
         let wide: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut sid = PSID::default();
-        unsafe {
-            ConvertStringSidToSidW(PCWSTR(wide.as_ptr()), &mut sid)
-                .map_err(|_| ServiceError::InvalidAcSid(sddl.into()))?;
-        }
+        let mut sid = PSid::default();
+        // SAFETY: `wide` is NUL-terminated for the duration of the call;
+        // `sid` is a live stack slot.
+        unsafe { convert_string_sid_to_sid(PCWStr(wide.as_ptr()), &mut sid) }
+            .map_err(|_| ServiceError::InvalidAcSid(sddl.into()))?;
         if sid.is_invalid() {
             return Err(ServiceError::InvalidAcSid(sddl.into()));
         }
         Ok(Self(sid))
     }
 
-    fn as_ptr(&self) -> PSID {
+    fn as_ptr(&self) -> PSid {
         self.0
     }
 }
@@ -97,55 +77,29 @@ impl OwnedSid {
 impl Drop for OwnedSid {
     fn drop(&mut self) {
         if !self.0.is_invalid() {
-            unsafe {
-                let _ = LocalFree(Some(HLOCAL(self.0 .0 as *mut c_void)));
-            }
+            // SAFETY: `self.0` was produced by `ConvertStringSidToSidW`,
+            // documented `LocalAlloc` owner.
+            unsafe { local_free(self.0 .0 as *mut c_void) }
         }
     }
 }
 
-pub struct WfpEngine {
-    handle: HANDLE,
+/// Runtime façade over the BFE engine: tracks installed per-sandbox
+/// filter ids and rolls back partial failures.
+pub struct PolicyManager {
+    engine: Engine,
     policies: Mutex<HashMap<PolicyId, Vec<u64>>>,
 }
 
-unsafe impl Send for WfpEngine {}
-unsafe impl Sync for WfpEngine {}
-
-impl WfpEngine {
+impl PolicyManager {
     pub fn open() -> Result<Self, ServiceError> {
-        let mut handle = HANDLE::default();
-        let session = FWPM_SESSION0 {
-            sessionKey: GUID::zeroed(),
-            displayData: FWPM_DISPLAY_DATA0 {
-                name: PWSTR(w!("mxc-service").as_ptr() as *mut _),
-                description: PWSTR(w!("MXC Tier 2 policy session").as_ptr() as *mut _),
-            },
-            flags: FWPM_SESSION_FLAG_DYNAMIC,
-            txnWaitTimeoutInMSec: 0,
-            processId: 0,
-            sid: std::ptr::null_mut(),
-            username: PWSTR::null(),
-            kernelMode: false.into(),
-        };
-        unsafe {
-            let rc = FwpmEngineOpen0(
-                None,
-                RPC_C_AUTHN_WINNT as u32,
-                None,
-                Some(&session),
-                &mut handle,
-            );
-            if rc != ERROR_SUCCESS.0 {
-                return Err(win32_err("FwpmEngineOpen0", rc));
-            }
-        }
-        let engine = Self {
-            handle,
+        let engine = Engine::open(SessionKind::Dynamic)?;
+        let mgr = Self {
+            engine,
             policies: Mutex::new(HashMap::new()),
         };
-        engine.ensure_provider_and_sublayer()?;
-        Ok(engine)
+        mgr.ensure_provider_and_sublayer()?;
+        Ok(mgr)
     }
 
     fn ensure_provider_and_sublayer(&self) -> Result<(), ServiceError> {
@@ -156,23 +110,20 @@ impl WfpEngine {
         let provider = FWPM_PROVIDER0 {
             providerKey: MXC_PROVIDER_GUID,
             displayData: FWPM_DISPLAY_DATA0 {
-                name: PWSTR(name.as_mut_ptr()),
-                description: PWSTR(desc.as_mut_ptr()),
+                name: PWStr(name.as_mut_ptr()),
+                description: PWStr(desc.as_mut_ptr()),
             },
-            // No PERSISTENT flag — the dynamic session reaps this on
-            // close. Each service start re-registers.
             flags: 0,
             providerData: FWP_BYTE_BLOB {
                 size: 0,
                 data: std::ptr::null_mut(),
             },
-            serviceName: PWSTR::null(),
+            serviceName: PWStr::null(),
         };
-        unsafe {
-            let rc = FwpmProviderAdd0(self.handle, &provider, None);
-            if rc != ERROR_SUCCESS.0 && rc != FWP_E_ALREADY_EXISTS.0 as u32 {
-                return Err(win32_err("FwpmProviderAdd0", rc));
-            }
+        // SAFETY: `provider`'s display-name buffers outlive the call.
+        let rc = unsafe { provider_add(self.engine.handle(), &provider) };
+        if rc != ERROR_SUCCESS.0 && rc != FWP_E_ALREADY_EXISTS.0 as u32 {
+            return Err(win32_err("FwpmProviderAdd0", rc));
         }
 
         let mut sub_name: Vec<u16> = "MXC Service Sublayer\0".encode_utf16().collect();
@@ -180,8 +131,8 @@ impl WfpEngine {
         let sublayer = FWPM_SUBLAYER0 {
             subLayerKey: MXC_SUBLAYER_GUID,
             displayData: FWPM_DISPLAY_DATA0 {
-                name: PWSTR(sub_name.as_mut_ptr()),
-                description: PWSTR(sub_desc.as_mut_ptr()),
+                name: PWStr(sub_name.as_mut_ptr()),
+                description: PWStr(sub_desc.as_mut_ptr()),
             },
             flags: 0,
             providerKey: &MXC_PROVIDER_GUID as *const _ as *mut _,
@@ -191,11 +142,11 @@ impl WfpEngine {
             },
             weight: MXC_SUBLAYER_WEIGHT,
         };
-        unsafe {
-            let rc = FwpmSubLayerAdd0(self.handle, &sublayer, None);
-            if rc != ERROR_SUCCESS.0 && rc != FWP_E_ALREADY_EXISTS.0 as u32 {
-                return Err(win32_err("FwpmSubLayerAdd0", rc));
-            }
+        // SAFETY: `sublayer`'s display-name buffers and the borrowed
+        // provider GUID outlive the call.
+        let rc = unsafe { sublayer_add(self.engine.handle(), &sublayer) };
+        if rc != ERROR_SUCCESS.0 && rc != FWP_E_ALREADY_EXISTS.0 as u32 {
+            return Err(win32_err("FwpmSubLayerAdd0", rc));
         }
         Ok(())
     }
@@ -215,7 +166,6 @@ impl WfpEngine {
             }
         }
 
-        // Validate every rule before touching WFP — fail fast.
         for (i, rule) in rules.iter().enumerate() {
             validate_rule(i, rule)?;
         }
@@ -224,38 +174,12 @@ impl WfpEngine {
         let policy_id = PolicyId::new_random();
         let mut installed: Vec<u64> = Vec::with_capacity(rules.len() * 2 + 2);
 
-        // Helper closure: install one filter, rolling back on error.
-        let install_one = |engine: &Self,
-                           installed: &mut Vec<u64>,
-                           layer: GUID,
-                           action: FWP_ACTION_TYPE,
-                           weight: u64,
-                           rule: Option<&Rule>|
-         -> Result<(), ServiceError> {
-            match engine.add_one_filter(&policy_id, sid.as_ptr(), layer, action, weight, rule) {
-                Ok(id) => {
-                    installed.push(id);
-                    Ok(())
-                }
-                Err(e) => {
-                    // Rollback prior filters in this transaction.
-                    for id in installed.drain(..) {
-                        unsafe {
-                            let _ = FwpmFilterDeleteById0(engine.handle, id);
-                        }
-                    }
-                    Err(e)
-                }
-            }
-        };
-
-        // Catch-all default-deny first (lowest weight) so explicit
-        // allows can carve through.
         if matches!(default, DefaultPolicy::Block) {
             for layer in [FWPM_LAYER_ALE_AUTH_CONNECT_V4, FWPM_LAYER_ALE_AUTH_CONNECT_V6] {
-                install_one(
-                    self,
+                self.install_one(
                     &mut installed,
+                    &policy_id,
+                    sid.as_ptr(),
                     layer,
                     FWP_ACTION_BLOCK,
                     WEIGHT_DEFAULT_DENY,
@@ -270,7 +194,15 @@ impl WfpEngine {
                 RuleVerb::Block => (FWP_ACTION_BLOCK, WEIGHT_EXPLICIT_BLOCK),
             };
             for layer in pick_layers(rule) {
-                install_one(self, &mut installed, layer, action, weight, Some(rule))?;
+                self.install_one(
+                    &mut installed,
+                    &policy_id,
+                    sid.as_ptr(),
+                    layer,
+                    action,
+                    weight,
+                    Some(rule),
+                )?;
             }
         }
 
@@ -291,20 +223,45 @@ impl WfpEngine {
             .ok_or(ServiceError::UnknownPolicy(policy_id))?;
         let mut removed = 0u32;
         for id in ids {
-            unsafe {
-                if FwpmFilterDeleteById0(self.handle, id) == ERROR_SUCCESS.0 {
-                    removed += 1;
-                }
+            // SAFETY: `engine` live; stale id is harmless (we ignore rc).
+            let rc = unsafe { filter_delete_by_id(self.engine.handle(), id) };
+            if rc == ERROR_SUCCESS.0 {
+                removed += 1;
             }
         }
         Ok(removed)
     }
 
+    fn install_one(
+        &self,
+        installed: &mut Vec<u64>,
+        policy_id: &PolicyId,
+        ac_sid: PSid,
+        layer: Guid,
+        action: FWP_ACTION_TYPE,
+        weight: u64,
+        rule: Option<&Rule>,
+    ) -> Result<(), ServiceError> {
+        match self.add_one_filter(policy_id, ac_sid, layer, action, weight, rule) {
+            Ok(id) => {
+                installed.push(id);
+                Ok(())
+            }
+            Err(e) => {
+                for id in installed.drain(..) {
+                    // SAFETY: rollback path; engine live; ignore rc.
+                    let _ = unsafe { filter_delete_by_id(self.engine.handle(), id) };
+                }
+                Err(e)
+            }
+        }
+    }
+
     fn add_one_filter(
         &self,
         policy_id: &PolicyId,
-        ac_sid: PSID,
-        layer: GUID,
+        ac_sid: PSid,
+        layer: Guid,
         action: FWP_ACTION_TYPE,
         weight: u64,
         rule: Option<&Rule>,
@@ -329,9 +286,8 @@ impl WfpEngine {
             },
         });
 
-        // 2. Remote address (if rule pins one). Absent = "any" per
-        // design review item #7.
         if let Some(r) = rule {
+            // 2. Remote address (absent = "any").
             if let Some(addr_str) = r.address.as_deref() {
                 let ip: IpAddr = addr_str.parse().map_err(|_| ServiceError::InvalidRule {
                     index: 0,
@@ -405,10 +361,10 @@ impl WfpEngine {
 
         let mut weight_storage: u64 = weight;
         let filter = FWPM_FILTER0 {
-            filterKey: GUID::zeroed(),
+            filterKey: Guid::zeroed(),
             displayData: FWPM_DISPLAY_DATA0 {
-                name: PWSTR(name.as_mut_ptr()),
-                description: PWSTR(desc.as_mut_ptr()),
+                name: PWStr(name.as_mut_ptr()),
+                description: PWStr(desc.as_mut_ptr()),
             },
             flags: FWPM_FILTER_FLAGS(0),
             providerKey: &MXC_PROVIDER_GUID as *const _ as *mut _,
@@ -429,7 +385,7 @@ impl WfpEngine {
             action: FWPM_ACTION0 {
                 r#type: action,
                 Anonymous: FWPM_ACTION0_0 {
-                    filterType: GUID::zeroed(),
+                    filterType: Guid::zeroed(),
                 },
             },
             Anonymous: FWPM_FILTER0_0 { rawContext: 0 },
@@ -444,31 +400,14 @@ impl WfpEngine {
         };
 
         let mut filter_id: u64 = 0;
-        unsafe {
-            let rc = FwpmFilterAdd0(self.handle, &filter, None, Some(&mut filter_id));
-            if rc != ERROR_SUCCESS.0 {
-                return Err(win32_err("FwpmFilterAdd0", rc));
-            }
+        // SAFETY: `engine` live; `filter` references stack/heap
+        // (`name`, `desc`, `conditions`, `v4_mask`, `v6_mask`,
+        // `weight_storage`) all live until end of function.
+        let rc = unsafe { filter_add(self.engine.handle(), &filter, Some(&mut filter_id)) };
+        if rc != ERROR_SUCCESS.0 {
+            return Err(win32_err("FwpmFilterAdd0", rc));
         }
         Ok(filter_id)
-    }
-}
-
-impl Drop for WfpEngine {
-    fn drop(&mut self) {
-        if !self.handle.is_invalid() {
-            unsafe {
-                let _ = FwpmEngineClose0(self.handle);
-            }
-        }
-    }
-}
-
-fn win32_err(api: &str, rc: u32) -> ServiceError {
-    ServiceError::WfpFailure {
-        api: api.into(),
-        hresult: rc,
-        message: format!("Win32 error {rc} (0x{rc:08X})"),
     }
 }
 
@@ -508,7 +447,7 @@ fn validate_rule(index: usize, rule: &Rule) -> Result<(), ServiceError> {
     Ok(())
 }
 
-fn pick_layers(rule: &Rule) -> Vec<GUID> {
+fn pick_layers(rule: &Rule) -> Vec<Guid> {
     match rule.address.as_deref().and_then(|s| s.parse::<IpAddr>().ok()) {
         Some(IpAddr::V4(_)) => vec![FWPM_LAYER_ALE_AUTH_CONNECT_V4],
         Some(IpAddr::V6(_)) => vec![FWPM_LAYER_ALE_AUTH_CONNECT_V6],
@@ -534,7 +473,7 @@ fn transport_to_ip_protocol(t: Transport) -> Option<u8> {
     }
 }
 
-fn layer_short_name(layer: &GUID) -> &'static str {
+fn layer_short_name(layer: &Guid) -> &'static str {
     if *layer == FWPM_LAYER_ALE_AUTH_CONNECT_V4 {
         "v4"
     } else if *layer == FWPM_LAYER_ALE_AUTH_CONNECT_V6 {

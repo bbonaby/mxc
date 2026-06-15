@@ -16,8 +16,8 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 uuid = { workspace = true }
 ciborium = { workspace = true }
-sha1 = "0.10"
 mxc_service_rpc = { workspace = true, features = ["server"] }
+mxc_wfp = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { workspace = true, features = [

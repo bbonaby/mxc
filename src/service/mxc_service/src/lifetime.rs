@@ -19,7 +19,7 @@
 //!    is granted to authenticated callers by the default process DACL.
 //!
 //! Either way, when the sandbox terminates we call
-//! `WfpEngine::remove_policy(policy_id)` and emit a diag line. The
+//! `PolicyManager::remove_policy(policy_id)` and emit a diag line. The
 //! explicit `RemovePolicy` IPC also calls `cancel` so we don't double-
 //! remove.
 
@@ -38,7 +38,7 @@ use windows::Win32::System::Threading::{
 
 use crate::diag;
 use crate::log;
-use crate::wfp::WfpEngine;
+use mxc_wfp::PolicyManager;
 
 struct Watcher {
     cancel: Arc<AtomicBool>,
@@ -53,7 +53,7 @@ fn watchers() -> &'static Mutex<HashMap<PolicyId, Watcher>> {
 /// Spawn a background thread that calls `engine.remove_policy` when
 /// `sandbox_pid` terminates. No-op if `sandbox_pid == 0` (caller didn't
 /// supply one). Idempotent per `policy_id`.
-pub fn track(engine: Arc<WfpEngine>, policy_id: PolicyId, sandbox_pid: u32) {
+pub fn track(engine: Arc<PolicyManager>, policy_id: PolicyId, sandbox_pid: u32) {
     if sandbox_pid == 0 {
         return;
     }
@@ -90,7 +90,7 @@ pub fn cancel(policy_id: PolicyId) -> bool {
     }
 }
 
-fn run_watch(engine: Arc<WfpEngine>, policy_id: PolicyId, pid: u32, cancel: Arc<AtomicBool>) {
+fn run_watch(engine: Arc<PolicyManager>, policy_id: PolicyId, pid: u32, cancel: Arc<AtomicBool>) {
     let exited = match wait_event_driven(pid, &cancel) {
         WaitOutcome::Exited => true,
         WaitOutcome::Cancelled => false,

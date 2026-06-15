@@ -20,14 +20,12 @@ use anyhow::Context;
 use clap::Parser;
 
 mod diag;
-mod grant;
 mod identity;
 mod ipc;
 mod lifetime;
 mod log;
-mod wfp;
 
-use crate::wfp::WfpEngine;
+use mxc_wfp::PolicyManager;
 
 const SERVICE_NAME: &str = "mxc-service";
 
@@ -58,12 +56,12 @@ fn main() -> anyhow::Result<()> {
     if cli.install_grant {
         log::init_console();
         log::info("install-grant: granting engine ACE to NT SERVICE\\mxc-service");
-        return grant::install_grant();
+        return mxc_wfp::install_grant().map_err(|e| anyhow::anyhow!("install-grant: {e}"));
     }
     if cli.uninstall_grant {
         log::init_console();
         log::info("uninstall-grant: revoking engine ACE");
-        return grant::uninstall_grant();
+        return mxc_wfp::uninstall_grant().map_err(|e| anyhow::anyhow!("uninstall-grant: {e}"));
     }
     if cli.console {
         log::init_console();
@@ -87,7 +85,7 @@ fn run_console() -> anyhow::Result<()> {
         "mxc-service starting (--console, pid={})",
         std::process::id()
     ));
-    let engine = Arc::new(WfpEngine::open().context("WfpEngine::open")?);
+    let engine = Arc::new(PolicyManager::open().context("PolicyManager::open")?);
     let shutdown = Arc::new(AtomicBool::new(false));
     let waker = Arc::new((Mutex::new(()), Condvar::new()));
 
@@ -133,7 +131,7 @@ mod service {
         service_dispatcher,
     };
 
-    use super::{diag, log, WfpEngine, SERVICE_NAME};
+    use super::{diag, log, PolicyManager, SERVICE_NAME};
 
     define_windows_service!(ffi_service_main, service_main);
 
@@ -183,7 +181,7 @@ mod service {
             })
             .ok();
 
-        let engine = Arc::new(WfpEngine::open()?);
+        let engine = Arc::new(PolicyManager::open()?);
         super::start_rpc(Arc::clone(&engine));
 
         diag::init();
@@ -232,7 +230,7 @@ mod service {
 fn _link_only(_: OsString) {}
 
 #[cfg(windows)]
-fn start_rpc(engine: Arc<WfpEngine>) {
+fn start_rpc(engine: Arc<PolicyManager>) {
     let engine_for_rpc = engine.clone();
     match mxc_service_rpc::server::start(move |req| {
         ipc::dispatch_request(req, &engine_for_rpc)

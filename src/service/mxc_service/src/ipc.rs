@@ -21,12 +21,12 @@ use crate::diag;
 use crate::identity;
 use crate::lifetime;
 use crate::log;
-use crate::wfp::WfpEngine;
+use mxc_wfp::PolicyManager;
 
 /// Dispatcher for an LRPC call. The MIDL stub already decoded `req`
-/// from CBOR; we route it to the right `WfpEngine` operation and emit
-/// caller identity + diag for the call.
-pub fn dispatch_request(req: Request, engine: &Arc<WfpEngine>) -> Response {
+/// from CBOR; we route it to the right `PolicyManager` operation and
+/// emit caller identity + diag for the call.
+pub fn dispatch_request(req: Request, engine: &Arc<PolicyManager>) -> Response {
     let caller = identity::capture_lrpc();
     diag::emit(format!("ipc: call from user_sid={}", caller.user_sid));
     match req {
@@ -40,7 +40,7 @@ pub fn dispatch_request(req: Request, engine: &Arc<WfpEngine>) -> Response {
     }
 }
 
-fn handle_add_impl(engine: &Arc<WfpEngine>, req: AddPolicyRequest, caller_sid: &str) -> Response {
+fn handle_add_impl(engine: &Arc<PolicyManager>, req: AddPolicyRequest, caller_sid: &str) -> Response {
     if req.rules.len() > MAX_RULES_PER_POLICY {
         return Response::Error(ServiceError::TooManyRules {
             max: MAX_RULES_PER_POLICY as u32,
@@ -87,7 +87,7 @@ fn handle_add_impl(engine: &Arc<WfpEngine>, req: AddPolicyRequest, caller_sid: &
 }
 
 fn handle_remove_impl(
-    engine: &Arc<WfpEngine>,
+    engine: &Arc<PolicyManager>,
     req: RemovePolicyRequest,
     caller_sid: &str,
 ) -> Response {

@@ -1499,9 +1499,9 @@ dependencies = [
  "ctrlc",
  "mxc_service_proto",
  "mxc_service_rpc",
+ "mxc_wfp",
  "serde",
  "serde_json",
- "sha1",
  "thiserror",
  "uuid",
  "windows",
@@ -1545,6 +1545,26 @@ dependencies = [
  "mxc_service_proto",
  "serde",
  "windows",
+]
+
+[[package]]
+name = "mxc_wfp"
+version = "0.7.0"
+dependencies = [
+ "mxc_service_proto",
+ "mxc_wfp_sys",
+ "sha1",
+ "thiserror",
+ "windows",
+ "windows-core",
+]
+
+[[package]]
+name = "mxc_wfp_sys"
+version = "0.7.0"
+dependencies = [
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

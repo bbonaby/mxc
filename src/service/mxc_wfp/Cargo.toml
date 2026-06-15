@@ -1,0 +1,24 @@
+[package]
+name = "mxc_wfp"
+version.workspace = true
+edition.workspace = true
+description = "Safe RAII wrapper over mxc_wfp_sys: BFE engine, install/uninstall grant, per-sandbox policy manager."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+mxc_wfp_sys = { path = "../mxc_wfp_sys" }
+mxc_service_proto = { workspace = true }
+thiserror = { workspace = true }
+sha1 = "0.10"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_NetworkManagement_WindowsFilteringPlatform",
+    "Win32_System_Rpc",
+] }
+windows-core = { workspace = true }
