@@ -9,10 +9,9 @@
 //! bound to the `PolicyId` returned by `AddPolicy`; we hold it until
 //! `stop()` runs and then call `RemovePolicy`.
 //!
-//! When the broker is unreachable (service not installed, pipe ACL
-//! denied, etc.) we fall back to the legacy `NetworkManager` path so
-//! existing playground configs that target the Tier 1 Windows
-//! Firewall code keep working.
+//! Host entries in `allowedHosts` / `blockedHosts` accept IPv4 or IPv6
+//! literals, CIDR ranges (e.g. `10.0.0.0/8`, `2001:db8::/32`), or
+//! hostnames (resolved to all A + AAAA records).
 
 use std::net::{IpAddr, ToSocketAddrs};
 use std::time::Duration;
@@ -143,30 +142,42 @@ fn push_host_rules(hosts: &[String], verb: RuleVerb, out: &mut Vec<Rule>, logger
         if host.is_empty() {
             continue;
         }
-        for addr in resolve(host, logger) {
+        for (addr, prefix) in resolve(host, logger) {
             out.push(Rule {
                 verb,
                 transport: Transport::Any,
                 address: Some(addr.to_string()),
-                prefix_length: None,
+                prefix_length: prefix,
                 port: None,
             });
         }
     }
 }
 
-fn resolve(host: &str, logger: &mut Logger) -> Vec<IpAddr> {
+/// Parse a host entry into `(IpAddr, Option<prefix_length>)` tuples.
+/// Accepts: bare IPv4/IPv6 literals, CIDR ranges (`a.b.c.d/N`,
+/// `2001:db8::/32`), or hostnames (resolved to A + AAAA records).
+fn resolve(host: &str, logger: &mut Logger) -> Vec<(IpAddr, Option<u8>)> {
+    if let Some((base, len)) = host.split_once('/') {
+        match (base.parse::<IpAddr>(), len.parse::<u8>()) {
+            (Ok(ip), Ok(p)) if valid_prefix(ip, p) => return vec![(ip, Some(p))],
+            _ => {
+                logger.log_line(&format!("broker: warn — invalid CIDR '{host}', skipping"));
+                return Vec::new();
+            }
+        }
+    }
     if let Ok(ip) = host.parse::<IpAddr>() {
-        return vec![ip];
+        return vec![(ip, None)];
     }
     // ToSocketAddrs needs a port; any port works for resolution.
     match (host, 0u16).to_socket_addrs() {
         Ok(iter) => {
-            let mut seen: Vec<IpAddr> = Vec::new();
+            let mut seen: Vec<(IpAddr, Option<u8>)> = Vec::new();
             for sa in iter {
-                let ip = sa.ip();
-                if !seen.contains(&ip) {
-                    seen.push(ip);
+                let entry = (sa.ip(), None);
+                if !seen.iter().any(|e| e.0 == entry.0) {
+                    seen.push(entry);
                 }
             }
             if seen.is_empty() {
@@ -178,6 +189,13 @@ fn resolve(host: &str, logger: &mut Logger) -> Vec<IpAddr> {
             logger.log_line(&format!("broker: warn — '{host}' DNS resolution failed: {e}"));
             Vec::new()
         }
+    }
+}
+
+fn valid_prefix(ip: IpAddr, prefix: u8) -> bool {
+    match ip {
+        IpAddr::V4(_) => prefix <= 32,
+        IpAddr::V6(_) => prefix <= 128,
     }
 }
 
@@ -231,6 +249,53 @@ mod tests {
     fn resolve_passes_through_ip_literal() {
         let mut logger = Logger::new(wxc_common::logger::Mode::Buffer);
         let addrs = resolve("8.8.8.8", &mut logger);
-        assert_eq!(addrs, vec!["8.8.8.8".parse::<IpAddr>().unwrap()]);
+        assert_eq!(addrs, vec![("8.8.8.8".parse::<IpAddr>().unwrap(), None)]);
+    }
+
+    #[test]
+    fn resolve_passes_through_ipv6_literal() {
+        let mut logger = Logger::new(wxc_common::logger::Mode::Buffer);
+        let addrs = resolve("2001:db8::1", &mut logger);
+        assert_eq!(addrs, vec![("2001:db8::1".parse::<IpAddr>().unwrap(), None)]);
+    }
+
+    #[test]
+    fn resolve_parses_v4_cidr() {
+        let mut logger = Logger::new(wxc_common::logger::Mode::Buffer);
+        let addrs = resolve("10.0.0.0/8", &mut logger);
+        assert_eq!(addrs, vec![("10.0.0.0".parse::<IpAddr>().unwrap(), Some(8))]);
+    }
+
+    #[test]
+    fn resolve_parses_v6_cidr() {
+        let mut logger = Logger::new(wxc_common::logger::Mode::Buffer);
+        let addrs = resolve("2001:db8::/32", &mut logger);
+        assert_eq!(addrs, vec![("2001:db8::".parse::<IpAddr>().unwrap(), Some(32))]);
+    }
+
+    #[test]
+    fn resolve_rejects_invalid_prefix() {
+        let mut logger = Logger::new(wxc_common::logger::Mode::Buffer);
+        assert!(resolve("10.0.0.0/40", &mut logger).is_empty());
+        assert!(resolve("2001:db8::/200", &mut logger).is_empty());
+    }
+
+    #[test]
+    fn push_host_rules_emits_prefix_for_cidr() {
+        let mut logger = Logger::new(wxc_common::logger::Mode::Buffer);
+        let mut rules = Vec::new();
+        push_host_rules(
+            &["10.0.0.0/8".into(), "2001:db8::/32".into(), "8.8.8.8".into()],
+            RuleVerb::Allow,
+            &mut rules,
+            &mut logger,
+        );
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rules[0].address.as_deref(), Some("10.0.0.0"));
+        assert_eq!(rules[0].prefix_length, Some(8));
+        assert_eq!(rules[1].address.as_deref(), Some("2001:db8::"));
+        assert_eq!(rules[1].prefix_length, Some(32));
+        assert_eq!(rules[2].address.as_deref(), Some("8.8.8.8"));
+        assert_eq!(rules[2].prefix_length, None);
     }
 }
