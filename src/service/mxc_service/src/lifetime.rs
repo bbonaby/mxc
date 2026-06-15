@@ -5,8 +5,9 @@
 //!
 //! Per spec §3.2 the production design uses an RPC-transferred process
 //! handle so the broker can `WaitForSingleObject` the sandbox directly.
-//! The prototype's named-pipe transport can't transfer handles, so we
-//! receive the sandbox PID and try two paths in order:
+//! Until that handle-transfer is wired through the LRPC interface, we
+//! receive the sandbox PID over the `AddPolicy` call and try two paths
+//! in order:
 //!
 //! 1. `OpenProcess(SYNCHRONIZE)` + `WaitForSingleObject(INFINITE)` —
 //!    works when the sandbox's default DACL grants LocalService

@@ -35,8 +35,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub const PIPE_NAME: &str = r"\\.\pipe\mxc-service";
-
 pub const IPC_MAJOR: u16 = 0;
 pub const IPC_MINOR: u16 = 1;
 

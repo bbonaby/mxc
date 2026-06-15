@@ -13,7 +13,7 @@
 //!                  dispatcher set up below.
 
 use std::ffi::OsString;
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
@@ -89,18 +89,27 @@ fn run_console() -> anyhow::Result<()> {
     ));
     let engine = Arc::new(WfpEngine::open().context("WfpEngine::open")?);
     let shutdown = Arc::new(AtomicBool::new(false));
+    let waker = Arc::new((Mutex::new(()), Condvar::new()));
 
-    let server = ipc::Server::new(Arc::clone(&engine), Arc::clone(&shutdown));
     start_rpc(Arc::clone(&engine));
+
     let shutdown_for_ctrlc = Arc::clone(&shutdown);
+    let waker_for_ctrlc = Arc::clone(&waker);
     ctrlc::set_handler(move || {
         log::info("ctrl-c received, shutting down");
         shutdown_for_ctrlc.store(true, Ordering::SeqCst);
-        ipc::wake_accept_loop();
+        waker_for_ctrlc.1.notify_all();
     })
     .ok();
 
-    server.run()
+    log::info("mxc-service running (LRPC); waiting for shutdown");
+    let guard = waker.0.lock().unwrap();
+    let _unused = waker
+        .1
+        .wait_while(guard, |_| !shutdown.load(Ordering::SeqCst))
+        .unwrap();
+    log::info("shutdown complete");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +119,7 @@ fn run_console() -> anyhow::Result<()> {
 #[cfg(windows)]
 mod service {
     use std::ffi::OsString;
-    use std::sync::Arc;
+    use std::sync::{Arc, Condvar, Mutex};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
@@ -124,7 +133,7 @@ mod service {
         service_dispatcher,
     };
 
-    use super::{diag, ipc, log, WfpEngine, SERVICE_NAME};
+    use super::{diag, log, WfpEngine, SERVICE_NAME};
 
     define_windows_service!(ffi_service_main, service_main);
 
@@ -142,13 +151,16 @@ mod service {
 
     fn run_service() -> anyhow::Result<()> {
         let shutdown = Arc::new(AtomicBool::new(false));
+        let waker = Arc::new((Mutex::new(()), Condvar::new()));
+
         let shutdown_for_handler = Arc::clone(&shutdown);
+        let waker_for_handler = Arc::clone(&waker);
 
         let event_handler = move |control_event| -> ServiceControlHandlerResult {
             match control_event {
                 ServiceControl::Stop | ServiceControl::Shutdown => {
                     shutdown_for_handler.store(true, Ordering::SeqCst);
-                    ipc::wake_accept_loop();
+                    waker_for_handler.1.notify_all();
                     ServiceControlHandlerResult::NoError
                 }
                 ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
@@ -172,7 +184,6 @@ mod service {
             .ok();
 
         let engine = Arc::new(WfpEngine::open()?);
-        let server = ipc::Server::new(Arc::clone(&engine), Arc::clone(&shutdown));
         super::start_rpc(Arc::clone(&engine));
 
         diag::init();
@@ -193,8 +204,12 @@ mod service {
             })
             .ok();
 
-        log::info("mxc-service running");
-        let res = server.run();
+        log::info("mxc-service running (LRPC); waiting for SCM stop");
+        let guard = waker.0.lock().unwrap();
+        let _unused = waker
+            .1
+            .wait_while(guard, |_| !shutdown.load(Ordering::SeqCst))
+            .unwrap();
 
         status_handle
             .set_service_status(ServiceStatus {
@@ -208,7 +223,7 @@ mod service {
             })
             .ok();
 
-        res
+        Ok(())
     }
 }
 
@@ -220,16 +235,18 @@ fn _link_only(_: OsString) {}
 fn start_rpc(engine: Arc<WfpEngine>) {
     let engine_for_rpc = engine.clone();
     match mxc_service_rpc::server::start(move |req| {
-        ipc::dispatch_request(req, &engine_for_rpc, 0)
+        ipc::dispatch_request(req, &engine_for_rpc)
     }) {
         Ok(()) => {
             log::info("LRPC listener registered on ncalrpc:mxc-service");
             diag::emit("LRPC listener registered on ncalrpc:mxc-service");
         }
         Err(e) => {
-            log::warn(&format!("LRPC listener failed to start ({e:#}); named-pipe still active"));
+            log::error(&format!(
+                "LRPC listener failed to start ({e:#}) — service has no callable transport"
+            ));
             diag::emit(format!(
-                "LRPC listener failed to start ({e:#}); named-pipe still active"
+                "LRPC listener failed to start ({e:#}) — service has no callable transport"
             ));
         }
     }

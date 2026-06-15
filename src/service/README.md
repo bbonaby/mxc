@@ -152,9 +152,9 @@ What is **not** on this list — implemented as designed:
 
 - **LRPC transport** (spec §6.7): the broker registers an LRPC
   interface on `ncalrpc:mxc-service` via MIDL-generated stubs (see
-  `mxc_service_rpc/`). Clients prefer LRPC and fall back to the
-  named-pipe path. Confirmed end-to-end on a VM with the broker line
-  `LRPC listener registered on ncalrpc:mxc-service`.
+  `mxc_service_rpc/`). LRPC is the **only** transport — there is no
+  named-pipe fallback. Confirmed end-to-end on a VM with the broker
+  line `LRPC listener registered on ncalrpc:mxc-service`.
 - **Sandbox lifecycle binding** (spec §3.2): broker is now called from
   `appcontainer_runner::run_internal_impl` between
   `CreateProcessW(CREATE_SUSPENDED)` and `ResumeThread`, with the real
@@ -162,10 +162,11 @@ What is **not** on this list — implemented as designed:
   to the sandbox PID via `lifetime.rs`: when the sandbox terminates,
   the broker auto-issues `RemovePolicy` (verified by the diag line
   `lifetime: sandbox pid=N exited → auto-RemovePolicy`).
-- **Per-call caller identity**: best-effort `ImpersonateNamedPipeClient`
-  + `OpenThreadToken` capture the caller's user SID. Logged only,
-  not used for trust decisions (the production design needs
-  Authenticode caller verification, which remains a separate pass).
+- **Per-call caller identity (LRPC)**: `RpcImpersonateClient` +
+  `OpenThreadToken` + `GetTokenInformation(TokenUser)` capture the
+  caller's user SID inside the RPC server handler. Logged only, not
+  used for trust decisions (Authenticode caller verification remains
+  a separate pass).
 - **WFP arbitration for AC↔AC loopback (empirical answer)**: ran
   `Test-WfpArbitrationAcToAc.ps1` with a real Rust listener
   (`ac_tcp_listener`) inside one AC and curl inside another. **MXC
@@ -179,18 +180,11 @@ What is **not** on this list — implemented as designed:
 
 ## Things this prototype still does **not** prove
 
-- That MXC user-mode PERMITs at `FWPM_LAYER_ALE_AUTH_CONNECT_V4`
-  dominate the system-origin filter 71655 in BFE arbitration for
-  AppContainer↔AppContainer loopback. `Test-WfpArbitration.ps1`
-  exercises a single-AC → closed-loopback-port baseline (which is
-  *not* gated by filter 71655 — the target isn't an AC); a faithful
-  AC↔AC test requires standing up a listener inside a second AC,
-  which is out of scope for the script harness.
-- That the named-pipe-fallback transport is equivalent to LRPC for
-  caller-token shape. Identity capture works on both, but
-  `OpenThreadToken(OpenAsSelf=true)` on a Negotiate-authenticated
-  LRPC call yields a richer impersonation token than the
-  named-pipe path; the prototype treats them as interchangeable.
+- Handle transfer over LRPC for `sandboxProcess` (spec §3.2). The
+  broker currently receives `sandbox_pid` over `AddPolicy` and uses
+  `OpenProcess` to bind filter lifetime; production should transfer
+  the process handle directly via an RPC `[in] handle_t` param so the
+  PID-to-handle race window is closed.
 
 ## Testing
 

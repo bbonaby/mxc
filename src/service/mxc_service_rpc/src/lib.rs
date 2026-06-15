@@ -1,12 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! LRPC bindings for `mxc-service`.
+//! LRPC bindings for `mxc-service` (spec §6.7 transport).
 //!
-//! Production-grade replacement for the named-pipe + CBOR transport.
 //! The IDL (idl/mxc_service.idl) exposes a single `RpcCall` method
 //! that round-trips CBOR blobs; protocol-level types live in
-//! `mxc_service_proto` and are shared with the named-pipe path.
+//! `mxc_service_proto`.
 //!
 //! Server:
 //!   ```ignore

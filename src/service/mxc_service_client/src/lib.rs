@@ -1,27 +1,19 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Thin client over the `mxc-service` named-pipe transport.
+//! Thin LRPC client for `mxc-service` (spec §6.7).
 //!
-//! This crate is consumed both by the `mxc-net.exe` CLI (for VM-side
-//! smoke testing) and — eventually — by the MXC orchestrator's
-//! AppContainer backend in place of the in-process WFP rule code in
-//! `appcontainer_common::network_manager`.
-
-use std::ffi::c_void;
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
-use std::time::Duration;
+//! This crate is consumed by the `mxc-net.exe` CLI (for VM-side smoke
+//! testing) and by the MXC AppContainer backend
+//! (`appcontainer_common::broker_network`) to install per-host WFP
+//! policy via the elevated broker.
 
 use mxc_service_proto::{
-    read_frame, write_frame, AddPolicyRequest, DefaultPolicy, GetVersionResponse, PolicyId,
-    RemovePolicyRequest, Request, Response, Rule, ServiceError, PIPE_NAME,
+    AddPolicyRequest, DefaultPolicy, GetVersionResponse, PolicyId, RemovePolicyRequest, Request,
+    Response, Rule, ServiceError,
 };
+use std::time::Duration;
 use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE};
-use windows::Win32::Storage::FileSystem::{
-    CreateFileW, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE, OPEN_EXISTING,
-};
-use windows::Win32::System::Pipes::WaitNamedPipeW;
 use windows::Win32::System::Services::{
     CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, SC_MANAGER_CONNECT,
     SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STATUS,
@@ -43,19 +35,15 @@ pub enum ClientError {
          Start it with `sc start mxc-service` or via Services.msc."
     )]
     ServiceNotRunning { state: u32 },
-    #[error("could not open pipe {PIPE_NAME}: {0}")]
-    Open(String),
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("framing: {0}")]
-    Frame(String),
+    #[error("lrpc: {0}")]
+    Lrpc(String),
     #[error("service returned error: {0}")]
     Service(#[from] ServiceError),
     #[error("unexpected response variant: {0}")]
     Unexpected(String),
 }
 
-/// SCM status of `mxc-service`. Used to turn a generic pipe/LRPC
+/// SCM status of `mxc-service`. Used to turn a generic LRPC
 /// "endpoint not found" into an actionable error for end users.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceInstallStatus {
@@ -96,78 +84,39 @@ pub fn service_install_status() -> ServiceInstallStatus {
     }
 }
 
-/// Classify a transport failure into an actionable error using SCM.
-fn classify_connect_failure(fallback: ClientError) -> ClientError {
+/// Map an LRPC connect failure to an actionable error using SCM.
+fn classify_connect_failure(raw: String) -> ClientError {
     match service_install_status() {
         ServiceInstallStatus::NotInstalled => ClientError::ServiceNotInstalled,
         ServiceInstallStatus::Stopped => ClientError::ServiceNotRunning { state: 1 },
         ServiceInstallStatus::StartPending => ClientError::ServiceNotRunning { state: 2 },
         ServiceInstallStatus::Other(s) => ClientError::ServiceNotRunning { state: s },
-        ServiceInstallStatus::Running => fallback,
+        ServiceInstallStatus::Running => ClientError::Lrpc(raw),
     }
 }
 
 pub struct Client {
-    transport: Transport,
-}
-
-enum Transport {
-    Rpc(mxc_service_rpc::client::Client),
-    Pipe(OwnedHandle),
+    inner: mxc_service_rpc::client::Client,
 }
 
 impl Client {
-    /// Try LRPC first (production transport per spec §6.7); fall back
-    /// to named pipe if LRPC isn't available (e.g., service was built
-    /// without the RPC listener registered). On total failure, consult
-    /// the Service Control Manager so callers get an actionable error
-    /// (`ServiceNotInstalled` vs `ServiceNotRunning`) instead of a raw
-    /// "endpoint not found" / "pipe does not exist".
+    /// Connect to the local `mxc-service` LRPC endpoint. On failure,
+    /// consult the Service Control Manager to return one of
+    /// `ServiceNotInstalled` / `ServiceNotRunning` / `Lrpc(reason)`.
     pub fn connect() -> Result<Self, ClientError> {
-        match mxc_service_rpc::client::Client::connect() {
-            Ok(c) => Ok(Self { transport: Transport::Rpc(c) }),
-            Err(_) => Self::connect_pipe(Duration::from_secs(5))
-                .map_err(classify_connect_failure),
-        }
+        mxc_service_rpc::client::Client::connect()
+            .map(|inner| Self { inner })
+            .map_err(|e| classify_connect_failure(format!("{e:#}")))
     }
 
-    pub fn connect_with_timeout(timeout: Duration) -> Result<Self, ClientError> {
-        match mxc_service_rpc::client::Client::connect() {
-            Ok(c) => Ok(Self { transport: Transport::Rpc(c) }),
-            Err(_) => Self::connect_pipe(timeout).map_err(classify_connect_failure),
-        }
-    }
-
-    /// Force the named-pipe transport (used by `mxc-net --pipe` for
-    /// transport-comparison diagnostics).
-    pub fn connect_pipe(timeout: Duration) -> Result<Self, ClientError> {
-        let name = HSTRING::from(PIPE_NAME);
-        unsafe {
-            let _ = WaitNamedPipeW(PCWSTR(name.as_ptr()), timeout.as_millis() as u32);
-        }
-        let handle = unsafe {
-            CreateFileW(
-                PCWSTR(name.as_ptr()),
-                (GENERIC_READ | GENERIC_WRITE).0,
-                FILE_SHARE_MODE(0),
-                None,
-                OPEN_EXISTING,
-                FILE_FLAGS_AND_ATTRIBUTES(0),
-                None,
-            )
-        };
-        let handle = handle.map_err(|e| {
-            let err = unsafe { GetLastError() };
-            ClientError::Open(format!("CreateFileW: {e} ({err:?})"))
-        })?;
-        Ok(Self {
-            transport: Transport::Pipe(unsafe { OwnedHandle::from_raw_handle(handle.0 as RawHandle) }),
-        })
+    /// Kept for API compatibility; LRPC binding is synchronous and
+    /// connects immediately, so `timeout` is currently unused.
+    pub fn connect_with_timeout(_timeout: Duration) -> Result<Self, ClientError> {
+        Self::connect()
     }
 
     pub fn get_version(mut self) -> Result<GetVersionResponse, ClientError> {
-        let resp = self.request(Request::GetVersion)?;
-        match resp {
+        match self.request(Request::GetVersion)? {
             Response::Version(v) => Ok(v),
             Response::Error(e) => Err(e.into()),
             other => Err(ClientError::Unexpected(format!("{other:?}"))),
@@ -203,53 +152,8 @@ impl Client {
     }
 
     fn request(&mut self, req: Request) -> Result<Response, ClientError> {
-        match &mut self.transport {
-            Transport::Rpc(c) => c
-                .call(&req)
-                .map_err(|e| ClientError::Frame(format!("lrpc: {e:#}"))),
-            Transport::Pipe(pipe) => {
-                let mut io = PipeIo(pipe);
-                write_frame(&mut io, &req).map_err(|e| ClientError::Frame(e.to_string()))?;
-                read_frame(&mut io).map_err(|e| ClientError::Frame(e.to_string()))
-            }
-        }
-    }
-}
-
-struct PipeIo<'a>(&'a OwnedHandle);
-
-impl<'a> std::io::Read for PipeIo<'a> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let mut got: u32 = 0;
-        unsafe {
-            ReadFile(
-                HANDLE(self.0.as_raw_handle() as *mut c_void),
-                Some(buf),
-                Some(&mut got),
-                None,
-            )
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e}")))?;
-        }
-        Ok(got as usize)
-    }
-}
-
-impl<'a> std::io::Write for PipeIo<'a> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut written: u32 = 0;
-        unsafe {
-            WriteFile(
-                HANDLE(self.0.as_raw_handle() as *mut c_void),
-                Some(buf),
-                Some(&mut written),
-                None,
-            )
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{e}")))?;
-        }
-        Ok(written as usize)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+        self.inner
+            .call(&req)
+            .map_err(|e| ClientError::Lrpc(format!("{e:#}")))
     }
 }
