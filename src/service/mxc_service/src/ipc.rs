@@ -4,7 +4,7 @@
 //! LRPC request dispatcher.
 //!
 //! Spec §6.7 transport is LRPC. The MIDL-generated `RpcCall` stub in
-//! `mxc_service_rpc::server` decodes a CBOR-framed `Request`, hands it
+//! `mxc_service_rpc_server` decodes a CBOR-framed `Request`, hands it
 //! to [`dispatch_request`], and serializes the resulting `Response`
 //! back to the caller. Caller identity is captured here via
 //! [`identity::capture_lrpc`] (logged only, not used for trust).

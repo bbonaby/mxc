@@ -32,7 +32,8 @@ members = [
     "testing/ac_tcp_listener",
     "tools/mxc_diagnostic_console",
     "service/mxc_service_proto",
-    "service/mxc_service_rpc",
+    "service/mxc_service_rpc_server",
+    "service/mxc_service_rpc_client",
     "service/mxc_service",
     "service/mxc_service_client",
     "service/mxc_wfp_sys",
@@ -118,7 +119,8 @@ url = "2"
 winreg = "0.55"
 mxc_build_common = { path = "core/mxc_build_common" }
 mxc_service_proto = { path = "service/mxc_service_proto" }
-mxc_service_rpc = { path = "service/mxc_service_rpc" }
+mxc_service_rpc_server = { path = "service/mxc_service_rpc_server" }
+mxc_service_rpc_client = { path = "service/mxc_service_rpc_client" }
 mxc_service_client = { path = "service/mxc_service_client" }
 mxc_wfp = { path = "service/mxc_wfp" }
 mxc_wfp_sys = { path = "service/mxc_wfp_sys" }

@@ -6,6 +6,7 @@
 //! user-supplied handler closure.
 
 use std::ffi::c_void;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
@@ -14,13 +15,17 @@ use mxc_service_proto::{Request, Response};
 use windows::core::PWSTR;
 use windows::Win32::System::Rpc::{
     RpcServerListen, RpcServerRegisterAuthInfoW, RpcServerRegisterIf3, RpcServerUseProtseqEpW,
-    RPC_C_AUTHN_GSS_NEGOTIATE, RPC_C_PROTSEQ_MAX_REQS_DEFAULT, RPC_IF_AUTOLISTEN, RPC_STATUS,
+    RPC_C_AUTHN_WINNT, RPC_C_PROTSEQ_MAX_REQS_DEFAULT, RPC_IF_AUTOLISTEN, RPC_STATUS,
 };
 
 use crate::sys::{self, MIDL_user_allocate};
 
 const RPC_S_OK: RPC_STATUS = RPC_STATUS(0);
 const RPC_S_ALREADY_LISTENING: RPC_STATUS = RPC_STATUS(1753);
+
+// Cap inbound request payloads. The IDL trusts caller-supplied size;
+// without a cap a single 4 GiB allocation would DoS the dispatcher.
+const MAX_REQUEST_BYTES: u32 = 1 * 1024 * 1024;
 
 type Dispatcher = Box<dyn Fn(Request) -> Response + Send + Sync + 'static>;
 
@@ -78,7 +83,7 @@ where
     }
 
     let status = unsafe {
-        RpcServerRegisterAuthInfoW(None, RPC_C_AUTHN_GSS_NEGOTIATE, None, None)
+        RpcServerRegisterAuthInfoW(None, RPC_C_AUTHN_WINNT, None, None)
     };
     if status != RPC_S_OK {
         return Err(anyhow!("RpcServerRegisterAuthInfoW failed: {:?}", status));
@@ -107,24 +112,29 @@ pub unsafe extern "C" fn RpcCall(
         *response_cbor = std::ptr::null_mut();
     }
 
-    let slice = unsafe { std::slice::from_raw_parts(request_cbor, request_len as usize) };
-    let request: Request = match ciborium::de::from_reader(slice) {
-        Ok(r) => r,
-        Err(_) => return,
-    };
-
-    let response = {
-        let guard = dispatcher_slot().lock().unwrap();
-        match guard.as_ref() {
-            Some(d) => d(request),
-            None => return,
-        }
-    };
-
-    let mut bytes: Vec<u8> = Vec::new();
-    if ciborium::ser::into_writer(&response, &mut bytes).is_err() {
+    if request_len > MAX_REQUEST_BYTES || request_cbor.is_null() {
         return;
     }
+
+    let result = catch_unwind(AssertUnwindSafe(|| -> Option<Vec<u8>> {
+        let slice = unsafe { std::slice::from_raw_parts(request_cbor, request_len as usize) };
+        let request: Request = ciborium::de::from_reader(slice).ok()?;
+
+        let response = {
+            let guard = dispatcher_slot().lock().ok()?;
+            let dispatcher = guard.as_ref()?;
+            dispatcher(request)
+        };
+
+        let mut bytes: Vec<u8> = Vec::new();
+        ciborium::ser::into_writer(&response, &mut bytes).ok()?;
+        Some(bytes)
+    }));
+
+    let bytes = match result {
+        Ok(Some(b)) => b,
+        _ => return,
+    };
 
     let out_buf = unsafe { MIDL_user_allocate(bytes.len()) as *mut u8 };
     if out_buf.is_null() {

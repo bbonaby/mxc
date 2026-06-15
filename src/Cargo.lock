@@ -1498,7 +1498,7 @@ dependencies = [
  "clap",
  "ctrlc",
  "mxc_service_proto",
- "mxc_service_rpc",
+ "mxc_service_rpc_server",
  "mxc_wfp",
  "serde",
  "serde_json",
@@ -1517,7 +1517,7 @@ dependencies = [
  "ciborium",
  "clap",
  "mxc_service_proto",
- "mxc_service_rpc",
+ "mxc_service_rpc_client",
  "serde",
  "serde_json",
  "thiserror",
@@ -1536,7 +1536,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "mxc_service_rpc"
+name = "mxc_service_rpc_client"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "cc",
+ "ciborium",
+ "mxc_service_proto",
+ "serde",
+ "windows",
+]
+
+[[package]]
+name = "mxc_service_rpc_server"
 version = "0.7.0"
 dependencies = [
  "anyhow",

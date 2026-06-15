@@ -152,7 +152,7 @@ What is **not** on this list — implemented as designed:
 
 - **LRPC transport** (spec §6.7): the broker registers an LRPC
   interface on `ncalrpc:mxc-service` via MIDL-generated stubs (see
-  `mxc_service_rpc/`). LRPC is the **only** transport — there is no
+  `mxc_service_rpc_server/` + `mxc_service_rpc_client/`). LRPC is the **only** transport — there is no
   named-pipe fallback. Confirmed end-to-end on a VM with the broker
   line `LRPC listener registered on ncalrpc:mxc-service`.
 - **Sandbox lifecycle binding** (spec §3.2): broker is now called from

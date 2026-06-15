@@ -96,7 +96,7 @@ fn classify_connect_failure(raw: String) -> ClientError {
 }
 
 pub struct Client {
-    inner: mxc_service_rpc::client::Client,
+    inner: mxc_service_rpc_client::Client,
 }
 
 impl Client {
@@ -104,7 +104,7 @@ impl Client {
     /// consult the Service Control Manager to return one of
     /// `ServiceNotInstalled` / `ServiceNotRunning` / `Lrpc(reason)`.
     pub fn connect() -> Result<Self, ClientError> {
-        mxc_service_rpc::client::Client::connect()
+        mxc_service_rpc_client::Client::connect()
             .map(|inner| Self { inner })
             .map_err(|e| classify_connect_failure(format!("{e:#}")))
     }

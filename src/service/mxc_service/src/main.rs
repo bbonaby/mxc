@@ -232,7 +232,7 @@ fn _link_only(_: OsString) {}
 #[cfg(windows)]
 fn start_rpc(engine: Arc<PolicyManager>) {
     let engine_for_rpc = engine.clone();
-    match mxc_service_rpc::server::start(move |req| {
+    match mxc_service_rpc_server::start(move |req| {
         ipc::dispatch_request(req, &engine_for_rpc)
     }) {
         Ok(()) => {

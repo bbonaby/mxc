@@ -1,15 +1,10 @@
 [package]
-name = "mxc_service_rpc"
+name = "mxc_service_rpc_server"
 version.workspace = true
 edition.workspace = true
 
 [lib]
 path = "src/lib.rs"
-
-[features]
-default = []
-client = []
-server = []
 
 [dependencies]
 windows = { workspace = true }

@@ -12,7 +12,7 @@ use windows::core::PWSTR;
 use windows::Win32::System::Com::RPC_C_AUTHN_LEVEL_PKT_INTEGRITY;
 use windows::Win32::System::Rpc::{
     RpcBindingFree, RpcBindingFromStringBindingW, RpcBindingSetAuthInfoW,
-    RpcStringBindingComposeW, RpcStringFreeW, RPC_C_AUTHN_GSS_NEGOTIATE, RPC_STATUS,
+    RpcStringBindingComposeW, RpcStringFreeW, RPC_C_AUTHN_WINNT, RPC_STATUS,
 };
 
 use crate::sys::{self, midl_free};
@@ -58,7 +58,7 @@ impl Client {
                 binding,
                 None,
                 RPC_C_AUTHN_LEVEL_PKT_INTEGRITY.0 as u32,
-                RPC_C_AUTHN_GSS_NEGOTIATE,
+                RPC_C_AUTHN_WINNT,
                 None,
                 0,
             )
