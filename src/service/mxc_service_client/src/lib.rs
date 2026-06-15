@@ -22,9 +22,27 @@ use windows::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE, OPEN_EXISTING,
 };
 use windows::Win32::System::Pipes::WaitNamedPipeW;
+use windows::Win32::System::Services::{
+    CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, SC_MANAGER_CONNECT,
+    SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STATUS,
+};
+
+const SERVICE_NAME: &str = "mxc-service";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
+    #[error(
+        "mxc-service is not installed on this machine. \
+         The MXC SDK requires the `mxc-service` Windows service to enforce \
+         per-host network policy. Ask the application that bundles MXC \
+         (or your IT admin) to install the MXC runtime MSI."
+    )]
+    ServiceNotInstalled,
+    #[error(
+        "mxc-service is installed but not running (state={state:?}). \
+         Start it with `sc start mxc-service` or via Services.msc."
+    )]
+    ServiceNotRunning { state: u32 },
     #[error("could not open pipe {PIPE_NAME}: {0}")]
     Open(String),
     #[error("io: {0}")]
@@ -35,6 +53,58 @@ pub enum ClientError {
     Service(#[from] ServiceError),
     #[error("unexpected response variant: {0}")]
     Unexpected(String),
+}
+
+/// SCM status of `mxc-service`. Used to turn a generic pipe/LRPC
+/// "endpoint not found" into an actionable error for end users.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceInstallStatus {
+    NotInstalled,
+    Stopped,
+    StartPending,
+    Running,
+    Other(u32),
+}
+
+pub fn service_install_status() -> ServiceInstallStatus {
+    unsafe {
+        let scm = match OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_CONNECT) {
+            Ok(h) => h,
+            Err(_) => return ServiceInstallStatus::NotInstalled,
+        };
+        let name = HSTRING::from(SERVICE_NAME);
+        let svc = match OpenServiceW(scm, PCWSTR(name.as_ptr()), SERVICE_QUERY_STATUS) {
+            Ok(h) => h,
+            Err(_) => {
+                let _ = CloseServiceHandle(scm);
+                return ServiceInstallStatus::NotInstalled;
+            }
+        };
+        let mut status = SERVICE_STATUS::default();
+        let ok = QueryServiceStatus(svc, &mut status).is_ok();
+        let _ = CloseServiceHandle(svc);
+        let _ = CloseServiceHandle(scm);
+        if !ok {
+            return ServiceInstallStatus::Other(0);
+        }
+        match status.dwCurrentState {
+            s if s == SERVICE_RUNNING => ServiceInstallStatus::Running,
+            s if s == SERVICE_START_PENDING => ServiceInstallStatus::StartPending,
+            s if s.0 == 1 => ServiceInstallStatus::Stopped,
+            s => ServiceInstallStatus::Other(s.0),
+        }
+    }
+}
+
+/// Classify a transport failure into an actionable error using SCM.
+fn classify_connect_failure(fallback: ClientError) -> ClientError {
+    match service_install_status() {
+        ServiceInstallStatus::NotInstalled => ClientError::ServiceNotInstalled,
+        ServiceInstallStatus::Stopped => ClientError::ServiceNotRunning { state: 1 },
+        ServiceInstallStatus::StartPending => ClientError::ServiceNotRunning { state: 2 },
+        ServiceInstallStatus::Other(s) => ClientError::ServiceNotRunning { state: s },
+        ServiceInstallStatus::Running => fallback,
+    }
 }
 
 pub struct Client {
@@ -49,18 +119,22 @@ enum Transport {
 impl Client {
     /// Try LRPC first (production transport per spec §6.7); fall back
     /// to named pipe if LRPC isn't available (e.g., service was built
-    /// without the RPC listener registered).
+    /// without the RPC listener registered). On total failure, consult
+    /// the Service Control Manager so callers get an actionable error
+    /// (`ServiceNotInstalled` vs `ServiceNotRunning`) instead of a raw
+    /// "endpoint not found" / "pipe does not exist".
     pub fn connect() -> Result<Self, ClientError> {
         match mxc_service_rpc::client::Client::connect() {
             Ok(c) => Ok(Self { transport: Transport::Rpc(c) }),
-            Err(_) => Self::connect_pipe(Duration::from_secs(5)),
+            Err(_) => Self::connect_pipe(Duration::from_secs(5))
+                .map_err(classify_connect_failure),
         }
     }
 
     pub fn connect_with_timeout(timeout: Duration) -> Result<Self, ClientError> {
         match mxc_service_rpc::client::Client::connect() {
             Ok(c) => Ok(Self { transport: Transport::Rpc(c) }),
-            Err(_) => Self::connect_pipe(timeout),
+            Err(_) => Self::connect_pipe(timeout).map_err(classify_connect_failure),
         }
     }
 
