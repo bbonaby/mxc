@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Context;
 use clap::Parser;
 
+mod authz;
 mod diag;
 mod identity;
 mod ipc;
@@ -106,6 +107,8 @@ fn run_console() -> anyhow::Result<()> {
         .1
         .wait_while(guard, |_| !shutdown.load(Ordering::SeqCst))
         .unwrap();
+    log::info("draining RPC listener");
+    mxc_service_rpc_server::shutdown();
     log::info("shutdown complete");
     Ok(())
 }
@@ -208,6 +211,9 @@ mod service {
             .1
             .wait_while(guard, |_| !shutdown.load(Ordering::SeqCst))
             .unwrap();
+
+        log::info("draining RPC listener");
+        mxc_service_rpc_server::shutdown();
 
         status_handle
             .set_service_status(ServiceStatus {

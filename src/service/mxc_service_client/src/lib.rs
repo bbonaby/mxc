@@ -24,17 +24,18 @@ const SERVICE_NAME: &str = "mxc-service";
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error(
-        "mxc-service is not installed on this machine. \
+        "mxc-service is not installed on this machine (and the LRPC \
+         endpoint was unreachable: {raw}). \
          The MXC SDK requires the `mxc-service` Windows service to enforce \
          per-host network policy. Ask the application that bundles MXC \
          (or your IT admin) to install the MXC runtime MSI."
     )]
-    ServiceNotInstalled,
+    ServiceNotInstalled { raw: String },
     #[error(
-        "mxc-service is installed but not running (state={state:?}). \
+        "mxc-service is installed but not running (state={state:?}, lrpc: {raw}). \
          Start it with `sc start mxc-service` or via Services.msc."
     )]
-    ServiceNotRunning { state: u32 },
+    ServiceNotRunning { state: u32, raw: String },
     #[error("lrpc: {0}")]
     Lrpc(String),
     #[error("service returned error: {0}")]
@@ -85,12 +86,14 @@ pub fn service_install_status() -> ServiceInstallStatus {
 }
 
 /// Map an LRPC connect failure to an actionable error using SCM.
+/// Always carries the raw LRPC error so callers can distinguish
+/// install-state issues from auth/binding failures.
 fn classify_connect_failure(raw: String) -> ClientError {
     match service_install_status() {
-        ServiceInstallStatus::NotInstalled => ClientError::ServiceNotInstalled,
-        ServiceInstallStatus::Stopped => ClientError::ServiceNotRunning { state: 1 },
-        ServiceInstallStatus::StartPending => ClientError::ServiceNotRunning { state: 2 },
-        ServiceInstallStatus::Other(s) => ClientError::ServiceNotRunning { state: s },
+        ServiceInstallStatus::NotInstalled => ClientError::ServiceNotInstalled { raw },
+        ServiceInstallStatus::Stopped => ClientError::ServiceNotRunning { state: 1, raw },
+        ServiceInstallStatus::StartPending => ClientError::ServiceNotRunning { state: 2, raw },
+        ServiceInstallStatus::Other(s) => ClientError::ServiceNotRunning { state: s, raw },
         ServiceInstallStatus::Running => ClientError::Lrpc(raw),
     }
 }

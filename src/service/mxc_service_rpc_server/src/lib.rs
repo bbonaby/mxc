@@ -11,5 +11,5 @@
 mod sys;
 pub mod server;
 
-pub use server::start;
+pub use server::{shutdown, start};
 pub use sys::ENDPOINT;

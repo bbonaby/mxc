@@ -2,17 +2,9 @@
 // Licensed under the MIT License.
 
 //! Per-call caller identity (LRPC).
-//!
-//! Spec §6.7 transport is LRPC. Inside an RPC server callback we use
-//! `RpcImpersonateClient(NULL)` to adopt the caller's token on the
-//! current thread, then `OpenThreadToken` + `GetTokenInformation(TokenUser)`
-//! to recover the caller's user SID, then `RpcRevertToSelf` to drop the
-//! impersonation.
-//!
-//! Identity is **logged**, not used for trust decisions. Authenticode
-//! caller verification remains its own design pass.
 
 use std::ffi::c_void;
+use std::path::PathBuf;
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HLOCAL, LocalFree};
 use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
@@ -20,45 +12,83 @@ use windows::Win32::Security::{
     GetTokenInformation, TokenUser, PSID, TOKEN_QUERY, TOKEN_USER,
 };
 use windows::Win32::System::Rpc::{RpcImpersonateClient, RpcRevertToSelf, RPC_STATUS};
-use windows::Win32::System::Threading::{GetCurrentThread, OpenThreadToken};
+use windows::Win32::System::Threading::{
+    GetCurrentThread, OpenProcess, OpenThreadToken, QueryFullProcessImageNameW,
+    PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows::core::PWSTR;
 
 const RPC_S_OK: RPC_STATUS = RPC_STATUS(0);
 
+// I_RpcBindingInqLocalClientPID — the only documented way to recover the
+// caller PID for an LRPC call from inside a server handler. Stable since
+// Windows XP and exported by rpcrt4.dll under this name.
+#[link(name = "rpcrt4")]
+unsafe extern "system" {
+    fn I_RpcBindingInqLocalClientPID(binding: *mut c_void, pid: *mut u32) -> i32;
+}
+
 pub struct CallerIdentity {
     pub user_sid: String,
+    pub pid: Option<u32>,
+    pub image_path: Option<PathBuf>,
 }
 
 impl CallerIdentity {
+    #[allow(dead_code)]
     pub fn unknown() -> Self {
-        Self { user_sid: "<unknown>".into() }
+        Self { user_sid: "<unknown>".into(), pid: None, image_path: None }
     }
 }
 
-/// Capture the caller's user SID from the active LRPC call. Best-effort:
-/// returns `CallerIdentity::unknown()` if impersonation or token lookup
-/// fails. Must be invoked from inside an RPC server handler (otherwise
-/// `RpcImpersonateClient` has no call context and fails).
+/// Capture the caller's user SID + PID + image path from the active
+/// LRPC call. Best-effort: missing pieces become `None`. Must be invoked
+/// from inside an RPC server handler.
 pub fn capture_lrpc() -> CallerIdentity {
-    let status = unsafe { RpcImpersonateClient(None) };
-    if status != RPC_S_OK {
-        crate::diag::emit(format!("identity: RpcImpersonateClient failed: {status:?}"));
-        return CallerIdentity::unknown();
+    let mut user_sid = "<unknown>".to_string();
+
+    let imp = unsafe { RpcImpersonateClient(None) };
+    if imp == RPC_S_OK {
+        if let Some(id) = query_thread_token_user() {
+            user_sid = id;
+        }
+        unsafe {
+            let _ = RpcRevertToSelf();
+        }
+    } else {
+        crate::diag::emit(format!("identity: RpcImpersonateClient failed: {imp:?}"));
     }
 
-    let id = query_thread_token_user();
+    let pid = query_caller_pid();
+    let image_path = pid.and_then(|p| process_image_path(p));
 
-    unsafe {
-        let _ = RpcRevertToSelf();
-    }
-
-    id.unwrap_or_else(|| {
-        crate::diag::emit("identity: OpenThreadToken / GetTokenInformation returned None");
-        CallerIdentity::unknown()
-    })
+    CallerIdentity { user_sid, pid, image_path }
 }
 
-fn query_thread_token_user() -> Option<CallerIdentity> {
+fn query_caller_pid() -> Option<u32> {
+    let mut pid: u32 = 0;
+    let status = unsafe { I_RpcBindingInqLocalClientPID(std::ptr::null_mut(), &mut pid) };
+    if status == 0 && pid != 0 { Some(pid) } else { None }
+}
+
+fn process_image_path(pid: u32) -> Option<PathBuf> {
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()? };
+    let mut buf = vec![0u16; 32 * 1024];
+    let mut len = buf.len() as u32;
+    let r = unsafe {
+        QueryFullProcessImageNameW(handle, PROCESS_NAME_FORMAT(0), PWSTR(buf.as_mut_ptr()), &mut len)
+    };
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+    if r.is_err() || len == 0 {
+        return None;
+    }
+    let s = String::from_utf16_lossy(&buf[..len as usize]);
+    Some(PathBuf::from(s))
+}
+
+fn query_thread_token_user() -> Option<String> {
     let mut raw: HANDLE = HANDLE(std::ptr::null_mut());
     let opened = unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, true, &mut raw) };
     if opened.is_err() {
@@ -86,8 +116,7 @@ fn query_thread_token_user() -> Option<CallerIdentity> {
     }
 
     let tu = unsafe { &*(buf.as_ptr() as *const TOKEN_USER) };
-    let sid = sid_to_string(tu.User.Sid)?;
-    Some(CallerIdentity { user_sid: sid })
+    sid_to_string(tu.User.Sid)
 }
 
 fn sid_to_string(sid: PSID) -> Option<String> {

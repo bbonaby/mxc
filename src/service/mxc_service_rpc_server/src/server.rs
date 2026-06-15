@@ -7,15 +7,16 @@
 
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::Mutex;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{anyhow, Result};
 use mxc_service_proto::{Request, Response};
 use windows::core::PWSTR;
 use windows::Win32::System::Rpc::{
-    RpcServerListen, RpcServerRegisterAuthInfoW, RpcServerRegisterIf3, RpcServerUseProtseqEpW,
-    RPC_C_AUTHN_WINNT, RPC_C_PROTSEQ_MAX_REQS_DEFAULT, RPC_IF_AUTOLISTEN, RPC_STATUS,
+    RpcMgmtStopServerListening, RpcMgmtWaitServerListen, RpcServerListen,
+    RpcServerRegisterAuthInfoW, RpcServerRegisterIf3, RpcServerUnregisterIf,
+    RpcServerUseProtseqEpW, RPC_C_AUTHN_WINNT, RPC_C_PROTSEQ_MAX_REQS_DEFAULT,
+    RPC_IF_AUTOLISTEN, RPC_STATUS,
 };
 
 use crate::sys::{self, MIDL_user_allocate};
@@ -27,7 +28,7 @@ const RPC_S_ALREADY_LISTENING: RPC_STATUS = RPC_STATUS(1753);
 // without a cap a single 4 GiB allocation would DoS the dispatcher.
 const MAX_REQUEST_BYTES: u32 = 1 * 1024 * 1024;
 
-type Dispatcher = Box<dyn Fn(Request) -> Response + Send + Sync + 'static>;
+type Dispatcher = Arc<dyn Fn(Request) -> Response + Send + Sync + 'static>;
 
 static DISPATCHER: OnceLock<Mutex<Option<Dispatcher>>> = OnceLock::new();
 
@@ -43,7 +44,7 @@ where
 {
     {
         let mut slot = dispatcher_slot().lock().unwrap();
-        *slot = Some(Box::new(handler));
+        *slot = Some(Arc::new(handler));
     }
 
     static ONCE: OnceLock<()> = OnceLock::new();
@@ -120,11 +121,13 @@ pub unsafe extern "C" fn RpcCall(
         let slice = unsafe { std::slice::from_raw_parts(request_cbor, request_len as usize) };
         let request: Request = ciborium::de::from_reader(slice).ok()?;
 
-        let response = {
+        // Clone the Arc out of the mutex so the handler runs without
+        // holding the lock (allows concurrent RPC dispatch).
+        let dispatcher = {
             let guard = dispatcher_slot().lock().ok()?;
-            let dispatcher = guard.as_ref()?;
-            dispatcher(request)
+            guard.as_ref()?.clone()
         };
+        let response = dispatcher(request);
 
         let mut bytes: Vec<u8> = Vec::new();
         ciborium::ser::into_writer(&response, &mut bytes).ok()?;
@@ -149,4 +152,23 @@ pub unsafe extern "C" fn RpcCall(
 
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Gracefully stop the RPC server: signal the listener to stop accepting
+/// new calls, wait for in-flight calls to complete, then unregister the
+/// interface. Safe to call from a signal handler. No-op if `start` was
+/// never invoked.
+pub fn shutdown() {
+    // Drop the dispatcher first so any racing in-flight call observes
+    // an empty slot and exits cleanly.
+    if let Some(slot) = DISPATCHER.get() {
+        if let Ok(mut guard) = slot.lock() {
+            *guard = None;
+        }
+    }
+    unsafe {
+        let _ = RpcMgmtStopServerListening(None);
+        let _ = RpcServerUnregisterIf(Some(sys::IMxcService_v1_0_s_ifspec), None, 1);
+        let _ = RpcMgmtWaitServerListen();
+    }
 }

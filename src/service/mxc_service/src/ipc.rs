@@ -17,8 +17,9 @@ use mxc_service_proto::{
     MAX_RULES_PER_POLICY,
 };
 
+use crate::authz;
 use crate::diag;
-use crate::identity;
+use crate::identity::{self, CallerIdentity};
 use crate::lifetime;
 use crate::log;
 use mxc_wfp::PolicyManager;
@@ -28,15 +29,43 @@ use mxc_wfp::PolicyManager;
 /// emit caller identity + diag for the call.
 pub fn dispatch_request(req: Request, engine: &Arc<PolicyManager>) -> Response {
     let caller = identity::capture_lrpc();
-    diag::emit(format!("ipc: call from user_sid={}", caller.user_sid));
+    diag::emit(format!(
+        "ipc: call from user_sid={} pid={:?} image={:?}",
+        caller.user_sid, caller.pid, caller.image_path
+    ));
     match req {
+        // GetVersion is intentionally NOT gated on authz so unsigned
+        // diagnostic tools can probe the service for compatibility.
         Request::GetVersion => Response::Version(GetVersionResponse {
             service_version: env!("CARGO_PKG_VERSION").into(),
             ipc_major: IPC_MAJOR,
             ipc_minor: IPC_MINOR,
         }),
-        Request::AddPolicy(req) => handle_add_impl(engine, req, &caller.user_sid),
-        Request::RemovePolicy(req) => handle_remove_impl(engine, req, &caller.user_sid),
+        Request::AddPolicy(req) => {
+            if let Err(e) = require_trusted_caller(&caller, "AddPolicy") {
+                return Response::Error(e);
+            }
+            handle_add_impl(engine, req, &caller.user_sid)
+        }
+        Request::RemovePolicy(req) => {
+            if let Err(e) = require_trusted_caller(&caller, "RemovePolicy") {
+                return Response::Error(e);
+            }
+            handle_remove_impl(engine, req, &caller.user_sid)
+        }
+    }
+}
+
+fn require_trusted_caller(caller: &CallerIdentity, op: &str) -> Result<(), ServiceError> {
+    match authz::enforce(caller.image_path.as_deref()) {
+        Ok(()) => Ok(()),
+        Err(msg) => {
+            log::warn(&format!(
+                "{op} DENIED caller_sid={} pid={:?} image={:?}: {msg}",
+                caller.user_sid, caller.pid, caller.image_path
+            ));
+            Err(ServiceError::Unauthorized(msg))
+        }
     }
 }
 
