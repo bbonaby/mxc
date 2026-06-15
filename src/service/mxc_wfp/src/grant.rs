@@ -111,6 +111,11 @@ fn modify_engine_ace(mode: ACCESS_MODE) -> Result<(), ServiceError> {
 /// and packing the digest into a `S-1-5-80-{h0..h4}` SID. This matches
 /// the Windows SCM algorithm and avoids `LookupAccountNameW`, which
 /// races with the LSA cache right after `CreateService`.
+///
+/// SHA-1 is required here — it's the SCM-defined algorithm, not a
+/// crypto choice. Switching to SHA-256 would produce a SID no Windows
+/// component recognizes. No security property depends on SHA-1's
+/// collision resistance in this use.
 pub(crate) struct ServiceSid(Vec<u8>);
 
 impl ServiceSid {
