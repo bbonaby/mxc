@@ -15,12 +15,15 @@
       privileges to the floor (SeChangeNotify is required for path
       resolution; everything else is dropped).
     * mxc-service.exe install-grant flag (custom action, runs as
-      LocalSystem during deferred install): writes an inheritable ACE
-      on the BFE engine SD granting NT SERVICE\mxc-service:
-        FWPM_ACTRL_OPEN | FWPM_ACTRL_ADD | FWPM_ACTRL_ADD_LINK
-        | DELETE | FWPM_ACTRL_ENUM | FWPM_ACTRL_READ
-      with CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE so the grant
-      propagates to filters/sublayers/providers we create later.
+      LocalSystem during deferred install): writes a **non-inheritable**
+      ACE on the BFE engine SD granting NT SERVICE\mxc-service:
+        FWPM_ACTRL_OPEN | FWPM_ACTRL_ADD
+      That is the floor: OPEN to open an engine session, ADD to create
+      our top-level provider + sublayer at service startup. The service
+      is then the creator/owner of those objects (and of filters added
+      under them), so WFP grants it implicit full access on its own
+      namespace without any further ACEs. Non-inheritable means our
+      rights do **not** leak to other providers' WFP objects.
 
   Sequencing (after InstallServices, before StartServices):
       InstallServices

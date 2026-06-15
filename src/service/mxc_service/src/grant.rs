@@ -5,19 +5,25 @@
 //!
 //! Spec §4.1: the MSI install custom action invokes this binary with
 //! `--install-grant` while running as `LocalSystem`. That gives it the
-//! `WRITE_DAC` it needs on the BFE engine SD. We write an inheritable
-//! ACE granting the per-service SID:
+//! `WRITE_DAC` it needs on the BFE engine SD.
+//!
+//! We add a **non-inheritable** ACE granting the per-service SID:
 //!
 //! ```text
-//! FWPM_ACTRL_OPEN | FWPM_ACTRL_ADD | FWPM_ACTRL_ADD_LINK
-//! | DELETE | FWPM_ACTRL_ENUM | FWPM_ACTRL_READ
+//! FWPM_ACTRL_OPEN | FWPM_ACTRL_ADD
 //! ```
 //!
-//! with `CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE` so the grant
-//! propagates to filters/sublayers/providers we create later. After
-//! this completes the service can run as write-restricted
-//! `LocalService` with `SERVICE_SID_TYPE_RESTRICTED` and still open
-//! the engine + add filters in our provider/sublayer.
+//! That is the minimum: `OPEN` to open an engine session, `ADD` to
+//! create top-level objects (our provider + sublayer) at service
+//! startup. Once the service creates those objects it is their
+//! creator/owner and implicitly has full access on them — and on
+//! filters it adds under its own sublayer — without any additional
+//! grants. So we never need rights on objects owned by Defender,
+//! VPN clients, or any other WFP consumer.
+//!
+//! The ACE was previously inheritable, which propagated our rights
+//! to every WFP object on the box. That over-reach is what this
+//! `non-inheritable + minimum-rights` design fixes.
 //!
 //! Made outside any explicit `FwpmTransaction*` — that is the
 //! documented MSDN constraint on `FwpmEngineSetSecurityInfo0`.
@@ -30,24 +36,23 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{LocalFree, HANDLE, HLOCAL};
 use windows::Win32::NetworkManagement::WindowsFilteringPlatform::{
     FwpmEngineClose0, FwpmEngineGetSecurityInfo0, FwpmEngineOpen0,
-    FwpmEngineSetSecurityInfo0, FWPM_ACTRL_ADD, FWPM_ACTRL_ADD_LINK, FWPM_ACTRL_ENUM,
-    FWPM_ACTRL_OPEN, FWPM_ACTRL_READ,
+    FwpmEngineSetSecurityInfo0, FWPM_ACTRL_ADD, FWPM_ACTRL_OPEN,
 };
 use windows::Win32::Security::Authorization::{
     SetEntriesInAclW, ACCESS_MODE, EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE,
     REVOKE_ACCESS, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN, TRUSTEE_W,
 };
 use windows::Win32::Security::{
-    ACE_FLAGS, ACL, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, NO_INHERITANCE,
-    OBJECT_INHERIT_ACE, PSECURITY_DESCRIPTOR, PSID,
+    ACL, DACL_SECURITY_INFORMATION, NO_INHERITANCE, PSECURITY_DESCRIPTOR, PSID,
 };
-use windows::Win32::Storage::FileSystem::DELETE as FILE_DELETE;
 use windows::core::PWSTR;
 
 const SERVICE_NAME_FOR_SID: &str = "mxc-service";
 
-const RIGHTS: u32 =
-    FWPM_ACTRL_OPEN | FWPM_ACTRL_ADD | FWPM_ACTRL_ADD_LINK | FWPM_ACTRL_ENUM | FWPM_ACTRL_READ;
+// Bare minimum on the BFE engine: open a session, add our top-level
+// objects. All further access (on objects we create) comes from the
+// implicit creator/owner ACE WFP installs at create time.
+const RIGHTS: u32 = FWPM_ACTRL_OPEN | FWPM_ACTRL_ADD;
 
 pub fn install_grant() -> anyhow::Result<()> {
     modify_engine_ace(GRANT_ACCESS).context("install grant")
@@ -85,13 +90,10 @@ fn modify_engine_ace(mode: ACCESS_MODE) -> anyhow::Result<()> {
         // current_dacl is owned by current_sd allocation.
         let _sd_owner = LocalAllocOwned(current_sd.0);
 
-        let inheritance = match mode {
-            GRANT_ACCESS => ACE_FLAGS(CONTAINER_INHERIT_ACE.0 | OBJECT_INHERIT_ACE.0),
-            _ => NO_INHERITANCE,
-        };
+        let inheritance = NO_INHERITANCE;
 
         let explicit = EXPLICIT_ACCESS_W {
-            grfAccessPermissions: RIGHTS | FILE_DELETE.0,
+            grfAccessPermissions: RIGHTS,
             grfAccessMode: mode,
             grfInheritance: inheritance,
             Trustee: TRUSTEE_W {
