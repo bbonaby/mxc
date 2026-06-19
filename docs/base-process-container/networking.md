@@ -2,37 +2,91 @@
 
 **Status:** draft for review · **Owner:** bbonaby · **Scope:** `processcontainer` backend only.
 
-> Implementation companion to **"MXC Network Configuration, GA"** — the cross-backend
-> networking doc that defines the policy schema, the three connectivity models, and the
-> deny-all-except-proxy GA goal (model 2). That doc is the source of truth for the *policy
-> surface*; this doc describes only *how the Windows `processcontainer` backend enforces it*
-> across current, future, and downlevel Windows builds.
->
-> Shared material is **not repeated here.** For the schema, connectivity models, design
-> decisions (D1–D8), cross-platform gaps (DNS-name policy, L7, encrypted payload,
-> inter-container), and industry precedent, see the overarching doc.
+> Implementation companion to the parent **MXC Network Configuration, GA** doc, which owns the
+> shared policy schema, the three connectivity models, and the GA goal (model 2 — deny-all-except-
+> proxy). This doc covers only how the Windows `processcontainer` backend enforces those models
+> across current, future, and downlevel Windows builds. Schema, design decisions (D1–D8), and
+> cross-platform gaps are referenced, not repeated.
 
 ## 1. What this backend delivers at GA
 
-Per sandbox, scoped to the sandbox's AppContainer SID, with **no UAC prompt per launch**:
+Per sandbox, scoped to the sandbox's AppContainer (AC) SID, with **no UAC prompt per launch**, via
+two enforcement primitives:
 
-- **(a) Default-deny outbound, allow/block by IP-literal/CIDR + transport + optional port**
-  (single port or inclusive range), IPv4 and IPv6 parity, explicit block wins over allow. This is
-  the Windows enforcement behind the overarching model 2 baseline (drop everything except the
-  proxy) and model 1 (direct egress under allow rules). Enforced by **WFP**.
-- **(b) Per-AppContainer WinHTTP HTTP/HTTPS proxy** pointed at a caller-provided loopback proxy
-  AppContainer. This is the one application-aware path Windows gives us out of the box: clients on
-  the WinHTTP stack (e.g. the WinHTTP/Chromium HTTP stack) are routed transparently; anything that
-  does not honor WinHTTP is governed by (a) — dropped in model 2, or filtered by the allow rules in
-  model 1. (Overarching D5 + the Windows backend enforcement table.)
+- **WFP outbound filters** — default-deny; allow/block by IP-literal/CIDR + transport + optional
+  port (single or inclusive range), IPv4/IPv6 parity, explicit block beats allow. Scoped to the AC SID.
+- **Per-AppContainer WinHTTP HTTP/S proxy** — points WinHTTP-stack clients (e.g. the WinHTTP/Chromium
+  stack) at a caller-provided loopback proxy AppContainer. The one app-aware path Windows gives us out
+  of the box; non-WinHTTP traffic is governed by the WFP filters, never proxied.
 
-**Explicitly out of GA scope for this backend** (do not infer otherwise from the schema):
+### 1.1 What `processcontainer` configures per connectivity model
 
-- **Transparent redirection of arbitrary TCP/UDP through the proxy.** Not GA. This is a future
-  capability with a hard OS dependency — see §5 #1. GA proxying is WinHTTP HTTP/S only.
-- L7 protocol classification (e.g. HTTPS vs SSH on :443), durable DNS-name rules, encrypted-payload
-  inspection, and inbound/listening policy. These are cross-platform non-goals owned by the
-  overarching doc (Gaps + D3); they are not Windows-specific and are not restated here.
+Each model is a concrete set of AppContainer network capabilities + enforcement. Example configs use
+the parent doc's proposed `network` schema.
+
+**Model 1 — direct egress, WFP-filtered (least restrictive).** Grant the AC the `internetClient`
+capability (and no other network capability) plus a loopback exemption for same-AC connections; WFP
+carries the allow/block rules. No proxy.
+
+```jsonc
+{
+  "network": {
+    "egress": {
+      "default": "deny",
+      "allow": [
+        { "to": [ { "cidr": "140.82.112.0/20" } ],
+          "ports": [ { "protocol": "tcp", "port": 443 } ] }
+      ]
+    },
+    "ingress": { "hostLoopback": "deny" }
+    // no "proxy" — direct egress, filtered by WFP
+  }
+}
+```
+
+**Model 2 — proxy-only egress (GA recommended).** Grant the AC **no** `internetClient` (and no other
+network capability) plus loopback exemptions for inter-AC (to the proxy AC) and intra-AC
+communication, and set the per-AC WinHTTP proxy. With no `internetClient`, the only reachable egress
+is the loopback proxy; the system drops everything else.
+
+```jsonc
+{
+  "network": {
+    "egress": { "default": "deny" },
+    "ingress": { "hostLoopback": "deny" },
+    "proxy": { "http": "127.0.0.1:8080" }
+  },
+  "processcontainer": {
+    "allowedSandboxes": [ "S-1-15-2-…" ]   // AC SID of the loopback proxy
+  }
+}
+```
+
+**Model 3 — fully blocked (most restrictive).** Add no network capabilities and no loopback
+exemptions; no proxy. All outbound and inbound is dropped.
+
+```jsonc
+{
+  "network": {
+    "egress": { "default": "deny" },   // no allow rules
+    "ingress": { "hostLoopback": "deny" }
+    // no "proxy", no network capabilities granted
+  }
+}
+```
+
+### 1.2 Out of GA scope for this backend
+
+Do not infer otherwise from the schema:
+
+- **Transparent TCP/UDP redirection through the proxy** — future; hard OS dependency (§5 #1). GA
+  proxying is WinHTTP HTTP/S only.
+- L7 classification (e.g. HTTPS vs SSH on :443).
+- Durable DNS-name rules.
+- Encrypted-payload inspection.
+- Inbound/listening policy.
+
+The last four are cross-platform non-goals owned by the parent doc.
 
 ## 2. Two enforcement paths: current vs downlevel
 
@@ -53,7 +107,7 @@ this backend, and it splits by Windows build:
   complete Tier 2 enforcement path nor a decided elevation story; it currently raises one UAC per
   launch via an elevated WinHTTP shim, which is exactly what must be replaced.
 
-There is **no third "best-effort" / advisory mode.** Per overarching D1/D7, a configuration the
+There is **no third "best-effort" / advisory mode.** Per the parent doc's D1/D7, a configuration the
 backend cannot actually enforce is rejected, not run advisory. Cooperative env-var proxy hints
 alone do not satisfy the GA proxy or outbound-enforcement commitments.
 
@@ -91,13 +145,13 @@ filters only to outbound traffic from that one sandbox.
   payload, so it cannot classify L7 protocols, match DNS names, or inspect encrypted content;
   ordinary filters return permit/block and cannot *rewrite/redirect* a destination (that needs a
   callout — see §5 #1). These limits are the Windows reason behind the cross-platform non-goals in
-  the overarching doc.
+  the parent doc.
 
 ## 4. Open problem — privileged enforcement downlevel (Tier 2) — DECISION OPEN
 
 > This section is deliberately a **problem statement with options, not a chosen design.** It needs
 > networking/security reviewer feedback before anything here is committed, and it overlaps the
-> separate **MXC elevation design** prerequisite called out in the overarching doc (the elevation
+> separate **MXC elevation design** prerequisite called out in the parent doc (the elevation
 > caveat under D2): the per-platform, per-technology elevation story is not solved here.
 
 **Problem.** Downlevel, the WFP and WinHTTP mutations that enforce GA policy need elevation, and
@@ -139,7 +193,7 @@ and reliance on under-documented "PID from IPC" APIs. These gaps are *why the de
 not a finished design.
 
 **Recommendation to reviewers:** prefer keeping privilege in the OS (Tier 1) and treating the
-downlevel elevation story as the separate MXC elevation design doc the overarching doc already
+downlevel elevation story as the separate MXC elevation design doc the parent doc already
 requires, rather than committing MXC to own a privileged networking broker. Open for discussion.
 
 ## 5. Open asks to the OS networking team
@@ -170,7 +224,7 @@ GA and post-GA both depend on OS-owned primitives MXC should consume rather than
 
 ## 6. Schema mapping — Windows-specific notes
 
-The policy schema is defined in the overarching doc and is container-type-agnostic (D7). Only the
+The policy schema is defined in the parent doc and is container-type-agnostic (D7). Only the
 Windows-specific bindings are noted here:
 
 - **Proxy AppContainer SID / AC→AC loopback.** The proxy peer (`processcontainer.allowedSandboxes`)
