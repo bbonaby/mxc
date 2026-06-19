@@ -64,9 +64,12 @@ is the loopback proxy; the system drops everything else.
 ```
 
 **Model 3 — fully blocked (most restrictive).** Add no network capabilities and no loopback
-exemptions; no proxy. All outbound and inbound is dropped.
+exemptions; no proxy. All outbound and inbound is dropped. Since deny-all is the default, model 3
+is also the result of providing no network policy at all — the explicit form, an omitted `network`
+block, and an empty `"network": {}` are equivalent:
 
 ```jsonc
+// explicit
 {
   "network": {
     "egress": { "default": "deny" },   // no allow rules
@@ -74,6 +77,13 @@ exemptions; no proxy. All outbound and inbound is dropped.
     // no "proxy", no network capabilities granted
   }
 }
+```
+
+```jsonc
+// equivalently (model 3 is the default) — "network" omitted, or empty
+{ /* no "network" key at all */ }
+// or
+{ "network": {} }
 ```
 
 ### 1.2 Out of GA scope for this backend
