@@ -5,7 +5,7 @@
 > Implementation companion to the parent **MXC Network Configuration, GA** doc, which owns the
 > shared policy schema, the three connectivity models, and the GA goal (model 2, deny-all-except-
 > proxy). This doc covers only how the Windows `processcontainer` backend enforces those models
-> across current, future, and downlevel Windows builds. Schema, design decisions (D1–D8), and
+> across current, future, and downlevel Windows builds. Schema, design decisions (D1-D8), and
 > cross-platform gaps are referenced, not repeated.
 
 ## 1. What this backend delivers at GA
