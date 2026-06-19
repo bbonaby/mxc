@@ -199,11 +199,3 @@ implementation detail, intentionally not specified here.)*
    Tier 2 derives it from a caller-supplied id, so MXC must generate a unique per-launch profile
    name for crash-recovery reconciliation to rely on SID uniqueness).
 7. Inbound/listening policy — separate post-GA contract; must not be inferred from outbound.
-
-## 8. Prior art
-
-See the **Industry Precedent** appendix of the overarching doc (Anthropic sandbox-runtime, OpenAI
-Codex) for the cross-platform pattern. One Windows-specific contrast worth keeping: OpenAI Codex
-scopes persistent WFP block-filters to a synthetic local **user** via `ALE_USER_ID`, whereas this
-backend scopes per-launch default-deny filters to the **AppContainer SID** via `ALE_PACKAGE_ID`;
-both converge on WFP-at-ALE as the enforcement primitive.
