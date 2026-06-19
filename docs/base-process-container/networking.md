@@ -10,22 +10,22 @@
 
 ## 1. What this backend delivers at GA
 
-Per sandbox, scoped to the sandbox's AppContainer (AC) SID, with **no UAC prompt per launch**, via
+Per sandbox, scoped to the sandbox's container SID, with **no UAC prompt per launch**, via
 two enforcement primitives:
 
 - **WFP outbound filters** — default-deny; allow/block by IP-literal/CIDR + transport + optional
-  port (single or inclusive range), IPv4/IPv6 parity, explicit block beats allow. Scoped to the AC SID.
-- **Per-AppContainer WinHTTP HTTP/S proxy** — points WinHTTP-stack clients (e.g. the WinHTTP/Chromium
-  stack) at a caller-provided loopback proxy AppContainer. The one app-aware path Windows gives us out
+  port (single or inclusive range), IPv4/IPv6 parity, explicit block beats allow. Scoped to the container SID.
+- **Per-container WinHTTP HTTP/S proxy** — points WinHTTP-stack clients (e.g. the WinHTTP/Chromium
+  stack) at a caller-provided loopback proxy container. The one app-aware path Windows gives us out
   of the box.
 
 ### 1.1 What `processcontainer` configures per connectivity model
 
-Each model is a concrete set of AppContainer network capabilities + enforcement. Example configs use
+Each model is a concrete set of container network capabilities + enforcement. Example configs use
 the parent doc's proposed `network` schema.
 
-**Model 1 — direct egress, WFP-filtered (least restrictive).** Grant the AC the `internetClient`
-capability (and no other network capability) plus a loopback exemption for same-AC connections; WFP
+**Model 1 — direct egress, WFP-filtered (least restrictive).** Grant the container the `internetClient`
+capability (and no other network capability) plus a loopback exemption for same-container connections; WFP
 carries the allow/block rules. No proxy.
 
 ```jsonc
@@ -44,9 +44,9 @@ carries the allow/block rules. No proxy.
 }
 ```
 
-**Model 2 — proxy-only egress (GA recommended).** Grant the AC **no** `internetClient` (and no other
-network capability) plus loopback exemptions for inter-AC (to the proxy AC) and intra-AC
-communication, and set the per-AC WinHTTP proxy. With no `internetClient`, the only reachable egress
+**Model 2 — proxy-only egress (consumer-recommended).** Grant the container **no** `internetClient` (and no other
+network capability) plus loopback exemptions for inter-container (to the proxy container) and intra-container
+communication, and set the per-container WinHTTP proxy. With no `internetClient`, the only reachable egress
 is the loopback proxy; the system drops everything else.
 
 ```jsonc
@@ -57,7 +57,7 @@ is the loopback proxy; the system drops everything else.
     "proxy": { "http": "127.0.0.1:8080" }
   },
   "processcontainer": {
-    "allowedSandboxes": [ "S-1-15-2-…" ]   // AC SID of the loopback proxy
+    "allowedSandboxes": [ "S-1-15-2-…" ]   // container SID of the loopback proxy
   }
 }
 ```
@@ -99,7 +99,7 @@ The last four are cross-platform non-goals owned by the parent doc.
 
 ## 2. Two enforcement paths: current vs downlevel
 
-Both (a) WFP filter writes and (b) per-AppContainer WinHTTP proxy configuration require a
+Both (a) WFP filter writes and (b) per-container WinHTTP proxy configuration require a
 **privileged context**. *How* that privilege is obtained is the entire implementation story for
 this backend, and it splits by Windows build:
 
@@ -109,7 +109,7 @@ this backend, and it splits by Windows build:
   privileged component, no UAC; filter lifetime is owned by the OS and bound to the sandbox process.
   This is the preferred path and where new capability lands first.
 - **Tier 2 — downlevel parity.** On builds without that API, MXC still owes the same GA policy. The
-  enforcement primitives exist (AppContainer-scoped WFP, per-AC WinHTTP), but applying them from
+  enforcement primitives exist (container-scoped WFP, per-container WinHTTP), but applying them from
   medium-IL `mxc-exec.exe` requires elevation — and prompting UAC on every sandbox launch is
   unacceptable for an interactive agent workflow. **How to obtain that privilege downlevel without
   per-launch UAC is an open design problem (§4), not a settled mechanism.** Today MXC has neither a
@@ -140,8 +140,8 @@ path implements), so only Tier 1 needs the probe.
 
 Outbound policy is enforced with WFP user-mode filters (`Fwpm*`) at
 `FWPM_LAYER_ALE_AUTH_CONNECT_V4` / `_V6` — the standard `connect()`-time authorization point —
-scoped to the sandbox via the `FWPM_CONDITION_ALE_PACKAGE_ID` (AppContainer SID) condition. The
-AppContainer SID is the per-sandbox identity available at filter-add time; Windows applies the
+scoped to the sandbox via the `FWPM_CONDITION_ALE_PACKAGE_ID` (container SID) condition. The
+container SID is the per-sandbox identity available at filter-add time; Windows applies the
 filters only to outbound traffic from that one sandbox.
 
 - **Admin requirement.** Adding WFP filters is admin-only (the BFE engine access check). On Tier 1
@@ -171,7 +171,7 @@ per-launch UAC is unacceptable. "Run something elevated once" is easy; the hard 
   answer, but it is an always-on privileged attack surface and an ownership/servicing burden. Is
   this MXC's responsibility, or should the privilege come from the OS/platform (the Tier 1 model,
   extended downlevel) so MXC never hosts a broker?
-- **Authenticating the caller.** The IPC client is **medium-IL and unpackaged** — no AppContainer
+- **Authenticating the caller.** The IPC client is **medium-IL and unpackaged** — no container
   SID, no MSIX identity, nothing the kernel can vouch for. A hostile same-desktop process can copy
   the client binary, inject into it, or spoof its image path. There is no perfect "trust a
   medium-IL caller" primitive; any broker must assume the caller may be hostile and bound the blast
@@ -195,7 +195,7 @@ per-launch UAC is unacceptable. "Run something elevated once" is easy; the hard 
 **If the service route is chosen,** caller authentication is the load-bearing piece and is itself
 only *partially* answerable today. Candidate defenses — verify the caller's signed binary at IPC
 time, expose a deliberately narrow API (add/remove/version only), scope every filter to the
-caller-named AppContainer SID, reject cross-caller teardown, resolve no names, expose no
+caller-named container SID, reject cross-caller teardown, resolve no names, expose no
 read/enumerate API — bound the damage, **but** have known gaps to close before GA: TOCTOU between
 checking the on-disk image and the running image, leaf-vs-root publisher pinning, endpoint ACLs,
 and reliance on under-documented "PID from IPC" APIs. These gaps are *why the decision is open*,
@@ -209,14 +209,14 @@ requires, rather than committing MXC to own a privileged networking broker. Open
 
 GA and post-GA both depend on OS-owned primitives MXC should consume rather than build:
 
-1. **Per-AppContainer WinHTTP lifecycle APIs — GA dependency.** GA's WinHTTP proxy path needs
+1. **Per-container WinHTTP lifecycle APIs — GA dependency.** GA's WinHTTP proxy path needs
    (a) a **per-policy delete** so MXC can tear down exactly the policy it set without clobbering
    other entries on the shared WinHTTP connection-policy tag, and (b) a **non-clobber interface
-   bind** so the per-AC proxy can be pinned to the loopback interface without delete-all-and-replace.
+   bind** so the per-container proxy can be pinned to the loopback interface without delete-all-and-replace.
    These are open dependencies, tracked as GA blockers.
 2. **Public documentation for `NetworkIsolationCreateAppContainerLoopbackRules`.** MXC uses this to
-   scope the sandbox↔proxy loopback exemption to the specific AC→AC pair, instead of the system-wide
-   `NetworkIsolationSetAppContainerConfig` (which also permits AC→non-AC traffic). The AC→AC scoping
+   scope the sandbox↔proxy loopback exemption to the specific container-to-container pair, instead of the system-wide
+   `NetworkIsolationSetAppContainerConfig` (which also permits container-to-non-container traffic). The container-to-container scoping
    already exists in supported OS builds today; the GA ask is to **publicly document the API on
    learn.microsoft.com** so the downlevel (Tier 2) path can depend on it.
 3. **Feature-bitmap query** alongside `CreateProcessInSandbox` (see §2.1): pure-query, no-privilege,
@@ -225,12 +225,12 @@ GA and post-GA both depend on OS-owned primitives MXC should consume rather than
 ## 6. Open questions
 
 1. `internetClient` × WFP authorization — GA-blocking PoC: whether an explicit WFP permit can
-   authorize public-network egress on its own, or the coarse AppContainer `internetClient`
+   authorize public-network egress on its own, or the coarse container `internetClient`
    capability must also be present.
 2. The downlevel privileged-enforcement decision (§4), including caller authentication — **open,
    needs feedback**; overlaps the separate MXC elevation design.
 3. WinHTTP per-policy delete + non-clobber interface bind (§5 #1) — GA dependency.
-4. Per-launch AppContainer-SID uniqueness on Tier 2 (Tier 1 mints an ephemeral SID per launch;
+4. Per-launch container-SID uniqueness on Tier 2 (Tier 1 mints an ephemeral SID per launch;
    Tier 2 derives it from a caller-supplied id, so MXC must generate a unique per-launch profile
    name for crash-recovery reconciliation to rely on SID uniqueness).
 5. Inbound/listening policy — separate post-GA contract; must not be inferred from outbound.
