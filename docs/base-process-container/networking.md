@@ -17,8 +17,7 @@ two enforcement primitives:
   port (single or inclusive range), IPv4/IPv6 parity, explicit block beats allow. Scoped to the AC SID.
 - **Per-AppContainer WinHTTP HTTP/S proxy** — points WinHTTP-stack clients (e.g. the WinHTTP/Chromium
   stack) at a caller-provided loopback proxy AppContainer. The one app-aware path Windows gives us out
-  of the box; traffic that does not honor WinHTTP (raw sockets, SSH, custom TCP/UDP) is never proxied
-  and is **dropped** — under the proxy posture (model 2) there is no direct-egress path.
+  of the box.
 
 ### 1.1 What `processcontainer` configures per connectivity model
 
