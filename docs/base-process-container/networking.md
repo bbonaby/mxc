@@ -46,7 +46,7 @@ configs use the parent doc's proposed `network` schema.
 }
 ```
 
-**Model 2: proxy-only egress (consumer-recommended).**
+**Model 2: proxy-only egress (recommended).**
 
 - **Capabilities:** no `internetClient`; loopback exemptions for inter-container (to the proxy
   container) and intra-container communication; no other network capability.
