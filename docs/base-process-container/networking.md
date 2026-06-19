@@ -10,8 +10,8 @@
 
 ## 1. What this backend delivers at GA
 
-Per sandbox, scoped to the sandbox's container SID, with **no UAC prompt per launch**, via
-two enforcement primitives:
+Each sandbox gets two enforcement primitives, scoped to its container SID and applied with **no UAC
+prompt per launch**:
 
 - **WFP outbound filters** — default-deny; allow/block by IP-literal/CIDR + transport + optional
   port (single or inclusive range), IPv4/IPv6 parity, explicit block beats allow. Scoped to the container SID.
@@ -21,12 +21,14 @@ two enforcement primitives:
 
 ### 1.1 What `processcontainer` configures per connectivity model
 
-Each model is a concrete set of container network capabilities + enforcement. Example configs use
-the parent doc's proposed `network` schema.
+Each model is a specific combination of container network capabilities and enforcement. Example
+configs use the parent doc's proposed `network` schema.
 
-**Model 1 — direct egress, WFP-filtered (least restrictive).** Grant the container the `internetClient`
-capability (and no other network capability) plus a loopback exemption for same-container connections; WFP
-carries the allow/block rules. No proxy.
+**Model 1 — direct egress, WFP-filtered (least restrictive).**
+
+- **Capabilities:** `internetClient`, plus a loopback exemption for same-container connections; no
+  other network capability.
+- **Enforcement:** WFP allow/block rules; no proxy.
 
 ```jsonc
 {
@@ -44,10 +46,12 @@ carries the allow/block rules. No proxy.
 }
 ```
 
-**Model 2 — proxy-only egress (consumer-recommended).** Grant the container **no** `internetClient` (and no other
-network capability) plus loopback exemptions for inter-container (to the proxy container) and intra-container
-communication, and set the per-container WinHTTP proxy. With no `internetClient`, the only reachable egress
-is the loopback proxy; the system drops everything else.
+**Model 2 — proxy-only egress (consumer-recommended).**
+
+- **Capabilities:** no `internetClient`; loopback exemptions for inter-container (to the proxy
+  container) and intra-container communication; no other network capability.
+- **Enforcement:** the per-container WinHTTP proxy. With no `internetClient`, the only reachable
+  egress is the loopback proxy — the system drops everything else.
 
 ```jsonc
 {
@@ -62,10 +66,13 @@ is the loopback proxy; the system drops everything else.
 }
 ```
 
-**Model 3 — fully blocked (most restrictive).** Add no network capabilities and no loopback
-exemptions; no proxy. All outbound and inbound is dropped. Since deny-all is the default, model 3
-is also the result of providing no network policy at all — the explicit form, an omitted `network`
-block, and an empty `"network": {}` are equivalent:
+**Model 3 — fully blocked (most restrictive).**
+
+- **Capabilities:** none; no loopback exemptions.
+- **Enforcement:** no proxy; all outbound and inbound dropped.
+
+Since deny-all is the default, model 3 is also the result of providing no network policy at all —
+the explicit form, an omitted `network` block, and an empty `"network": {}` are equivalent:
 
 ```jsonc
 // explicit
@@ -113,8 +120,8 @@ this backend, and it splits by Windows build:
   medium-IL `mxc-exec.exe` requires elevation — and prompting UAC on every sandbox launch is
   unacceptable for an interactive agent workflow. **How to obtain that privilege downlevel without
   per-launch UAC is an open design problem (§4), not a settled mechanism.** Today MXC has neither a
-  complete Tier 2 enforcement path nor a decided elevation story; it currently raises one UAC per
-  launch via an elevated WinHTTP shim, which is exactly what must be replaced.
+  complete Tier 2 enforcement path nor a decided elevation story. It currently raises one UAC per
+  launch via an elevated WinHTTP shim — exactly what must be replaced.
 
 There is **no third "best-effort" / advisory mode.** Per the parent doc's D1/D7, a configuration the
 backend cannot actually enforce is rejected, not run advisory. Cooperative env-var proxy hints
@@ -125,7 +132,7 @@ alone do not satisfy the GA proxy or outbound-enforcement commitments.
 `CreateProcessInSandbox` is not a single build; its network-policy surface grows over time. A
 machine can expose the API but not yet honor a specific policy field MXC asks for. The SDK must
 **not** silently fall back to Tier 2 in that case — the two paths have different security and
-cleanup properties and the operator would not know. The contract:
+cleanup properties, and the operator would not know. The contract:
 
 - Fall back to Tier 2 only when the API is **absent on the build** — not when it is present but
   missing a requested field.
@@ -150,11 +157,11 @@ filters only to outbound traffic from that one sandbox.
   closes (and BFE auto-closes the handle of an exited process), so filter lifetime ≤ sandbox
   lifetime with no caller cleanup. Tier 1 relies on this; a Tier 2 implementation must reproduce
   equivalent process-bound cleanup.
-- **What WFP cannot do here.** Connect-time authorization sees endpoint + transport metadata, not
-  payload, so it cannot classify L7 protocols, match DNS names, or inspect encrypted content;
-  ordinary filters return permit/block and cannot *rewrite/redirect* a destination (that needs a
-  callout). These limits are the Windows reason behind the cross-platform non-goals in
-  the parent doc.
+- **What WFP cannot do here.** Connect-time authorization sees endpoint and transport metadata, not
+  payload, so it cannot classify L7 protocols, match DNS names, or inspect encrypted content.
+  Ordinary filters also return only permit/block; they cannot *rewrite/redirect* a destination (that
+  needs a callout). These limits are the Windows reason behind the cross-platform non-goals in the
+  parent doc.
 
 ## 4. Open problem — privileged enforcement downlevel (Tier 2) — DECISION OPEN
 
@@ -192,14 +199,21 @@ per-launch UAC is unacceptable. "Run something elevated once" is easy; the hard 
 | OS extends the Tier 1 in-process model downlevel | no MXC broker at all | OS-backport timeline; may not land for GA |
 | OS relaxes the WFP user-mode admin gate | no broker needed | long-shot networking-team ask; the admin gate is long-standing |
 
-**If the service route is chosen,** caller authentication is the load-bearing piece and is itself
-only *partially* answerable today. Candidate defenses — verify the caller's signed binary at IPC
-time, expose a deliberately narrow API (add/remove/version only), scope every filter to the
-caller-named container SID, reject cross-caller teardown, resolve no names, expose no
-read/enumerate API — bound the damage, **but** have known gaps to close before GA: TOCTOU between
-checking the on-disk image and the running image, leaf-vs-root publisher pinning, endpoint ACLs,
-and reliance on under-documented "PID from IPC" APIs. These gaps are *why the decision is open*,
-not a finished design.
+**If the service route is chosen,** caller authentication is the load-bearing piece, and it is only
+*partially* answerable today. Candidate defenses bound the damage:
+
+- verify the caller's signed binary at IPC time;
+- expose a deliberately narrow API (add / remove / version only);
+- scope every filter to the caller-named container SID;
+- reject cross-caller teardown;
+- resolve no names, and expose no read/enumerate API.
+
+Known gaps remain to close before GA — these are *why the decision is open*, not a finished design:
+
+- TOCTOU between checking the on-disk image and the running image;
+- leaf-vs-root publisher pinning;
+- endpoint ACLs;
+- reliance on under-documented "PID from IPC" APIs.
 
 **Recommendation to reviewers:** prefer keeping privilege in the OS (Tier 1) and treating the
 downlevel elevation story as the separate MXC elevation design doc the parent doc already
