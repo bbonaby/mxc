@@ -90,8 +90,7 @@ block, and an empty `"network": {}` are equivalent:
 
 Do not infer otherwise from the schema:
 
-- **Transparent TCP/UDP redirection through the proxy** — future; hard OS dependency (§5 #1). GA
-  proxying is WinHTTP HTTP/S only.
+- **Transparent TCP/UDP redirection through the proxy.** GA proxying is WinHTTP HTTP/S only.
 - L7 classification (e.g. HTTPS vs SSH on :443).
 - Durable DNS-name rules.
 - Encrypted-payload inspection.
@@ -135,7 +134,7 @@ cleanup properties and the operator would not know. The contract:
   missing capability**.
 
 This requires an **OS feature-bitmap query** (one bit per policy capability) that ships with
-`CreateProcessInSandbox` — see §5 #4. On Tier 2 the supported set is fixed (whatever the GA Tier 2
+`CreateProcessInSandbox` — see §5 #3. On Tier 2 the supported set is fixed (whatever the GA Tier 2
 path implements), so only Tier 1 needs the probe.
 
 ## 3. WFP is the enforcement primitive (both tiers)
@@ -155,7 +154,7 @@ filters only to outbound traffic from that one sandbox.
 - **What WFP cannot do here.** Connect-time authorization sees endpoint + transport metadata, not
   payload, so it cannot classify L7 protocols, match DNS names, or inspect encrypted content;
   ordinary filters return permit/block and cannot *rewrite/redirect* a destination (that needs a
-  callout — see §5 #1). These limits are the Windows reason behind the cross-platform non-goals in
+  callout). These limits are the Windows reason behind the cross-platform non-goals in
   the parent doc.
 
 ## 4. Open problem — privileged enforcement downlevel (Tier 2) — DECISION OPEN
@@ -211,56 +210,28 @@ requires, rather than committing MXC to own a privileged networking broker. Open
 
 GA and post-GA both depend on OS-owned primitives MXC should consume rather than build:
 
-1. **Transparent TCP/UDP proxy redirection — FUTURE, not GA.** Per-AppContainer transparent
-   outbound redirection of arbitrary TCP streams and UDP datagrams to the loopback proxy, without
-   app cooperation, preserving original destination + originating AC identity, preventing
-   direct-egress bypass and redirect loops, per-sandbox and removed on exit. The likely
-   implementation class is a WFP **ALE connect-redirect callout**; MXC should **ask for an inbox,
-   OS-owned primitive `CreateProcessInSandbox` can consume**, not ship and service its own kernel
-   driver. ICMP/raw IP stay block-only. *(This is the capability previously framed as an at-risk GA
-   item; it is explicitly out of GA.)*
-2. **Per-AppContainer WinHTTP lifecycle APIs — GA dependency.** GA's WinHTTP proxy path needs
+1. **Per-AppContainer WinHTTP lifecycle APIs — GA dependency.** GA's WinHTTP proxy path needs
    (a) a **per-policy delete** so MXC can tear down exactly the policy it set without clobbering
    other entries on the shared WinHTTP connection-policy tag, and (b) a **non-clobber interface
    bind** so the per-AC proxy can be pinned to the loopback interface without delete-all-and-replace.
    These are open dependencies, tracked as GA blockers.
-3. **AC→AC loopback scoping.** Use `NetworkIsolationCreateAppContainerLoopbackRules` (scoped to the
-   specific AC→AC pair) for the sandbox↔proxy loopback exemption instead of the system-wide
-   `NetworkIsolationSetAppContainerConfig` (which also permits AC→non-AC traffic). Needed in the OS
-   Tier 1 path and in any Tier 2 path.
-4. **Feature-bitmap query** alongside `CreateProcessInSandbox` (see §2.1): pure-query, no-privilege,
+2. **Public documentation for `NetworkIsolationCreateAppContainerLoopbackRules`.** MXC uses this to
+   scope the sandbox↔proxy loopback exemption to the specific AC→AC pair, instead of the system-wide
+   `NetworkIsolationSetAppContainerConfig` (which also permits AC→non-AC traffic). The AC→AC scoping
+   already exists in supported OS builds today; the GA ask is to **publicly document the API on
+   learn.microsoft.com** so the downlevel (Tier 2) path can depend on it.
+3. **Feature-bitmap query** alongside `CreateProcessInSandbox` (see §2.1): pure-query, no-privilege,
    one bit per *end-to-end-functional* policy capability, additive over time.
-5. **(Long shot) Relax the WFP user-mode admin gate** so per-AppContainer filters can be set without
-   elevation — would remove the need for any downlevel broker (§4).
 
-## 6. Schema mapping — Windows-specific notes
+## 6. Open questions
 
-The policy schema is defined in the parent doc and is container-type-agnostic (D7). Only the
-Windows-specific bindings are noted here:
-
-- **Proxy AppContainer SID / AC→AC loopback.** The proxy peer (`processcontainer.allowedSandboxes`)
-  is how MXC installs the directional loopback exemption that lets the sandbox reach the loopback
-  proxy while AppContainer loopback is otherwise blocked. An external proxy must run inside an
-  AppContainer; an MXC-managed proxy derives the SID internally.
-- **`internetClient` × WFP — open PoC (GA-blocking).** Determine whether an explicit WFP permit can
-  authorize public-network egress on its own, or whether the coarse AppContainer `internetClient`
-  capability must also be present. The backend must enforce the *proven* rule and return a typed
-  configuration error when the required capability combination is missing — never silently
-  broadening the sandbox. The schema must not treat `internetClient` and an outbound policy as
-  inherently contradictory.
-
-*(The internal FlatBuffer / IPC rule encodings mirror the public rule model 1:1 and are an
-implementation detail, intentionally not specified here.)*
-
-## 7. Open questions
-
-1. `internetClient` × WFP authorization (§6) — GA-blocking PoC.
+1. `internetClient` × WFP authorization — GA-blocking PoC: whether an explicit WFP permit can
+   authorize public-network egress on its own, or the coarse AppContainer `internetClient`
+   capability must also be present.
 2. The downlevel privileged-enforcement decision (§4), including caller authentication — **open,
    needs feedback**; overlaps the separate MXC elevation design.
-3. Transparent TCP/UDP redirection primitive (§5 #1) — future; needs networking-team ownership.
-4. WinHTTP per-policy delete + non-clobber interface bind (§5 #2) — GA dependency.
-5. IPv6 parity end-to-end (literal/CIDR, loopback, TCP/UDP/ICMPv6).
-6. Per-launch AppContainer-SID uniqueness on Tier 2 (Tier 1 mints an ephemeral SID per launch;
+3. WinHTTP per-policy delete + non-clobber interface bind (§5 #1) — GA dependency.
+4. Per-launch AppContainer-SID uniqueness on Tier 2 (Tier 1 mints an ephemeral SID per launch;
    Tier 2 derives it from a caller-supplied id, so MXC must generate a unique per-launch profile
    name for crash-recovery reconciliation to rely on SID uniqueness).
-7. Inbound/listening policy — separate post-GA contract; must not be inferred from outbound.
+5. Inbound/listening policy — separate post-GA contract; must not be inferred from outbound.
