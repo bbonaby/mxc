@@ -123,10 +123,6 @@ this backend, and it splits by Windows build:
   complete Tier 2 enforcement path nor a decided elevation story. It currently raises one UAC per
   launch via an elevated WinHTTP shim. That is exactly what must be replaced.
 
-There is **no third "best-effort" / advisory mode.** Per the parent doc's D1/D7, a configuration the
-backend cannot actually enforce is rejected, not run advisory. Cooperative env-var proxy hints
-alone do not satisfy the GA proxy or outbound-enforcement commitments.
-
 ### 2.1 Fail loud on version skew: never silently downgrade
 
 `CreateProcessInSandbox` is not a single build; its network-policy surface grows over time. A
