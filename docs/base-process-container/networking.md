@@ -135,9 +135,9 @@ cleanup properties, and the operator would not know. The contract:
 - For a present-but-incomplete API, MXC rejects the launch with a typed error **naming the
   missing capability**.
 
-This requires an **OS feature-bitmap query** (one bit per policy capability) that ships with
-`CreateProcessInSandbox`. See §5 #3. On Tier 2 the supported set is fixed (whatever the GA Tier 2
-path implements), so only Tier 1 needs the probe.
+This requires a **companion API alongside `CreateProcessInSandbox`** (see §5 #3) that, for example,
+lets MXC enumerate the network features the build actually supports. On Tier 2 the supported set is
+fixed (whatever the GA Tier 2 path implements), so only Tier 1 needs to query it.
 
 ## 3. WFP is the enforcement primitive (both tiers)
 
@@ -153,11 +153,6 @@ filters only to outbound traffic from that one sandbox.
   closes (and BFE auto-closes the handle of an exited process), so filter lifetime ≤ sandbox
   lifetime with no caller cleanup. Tier 1 relies on this; a Tier 2 implementation must reproduce
   equivalent process-bound cleanup.
-- **What WFP cannot do here.** Connect-time authorization sees endpoint and transport metadata, not
-  payload, so it cannot classify L7 protocols, match DNS names, or inspect encrypted content.
-  Ordinary filters also return only permit/block; they cannot *rewrite/redirect* a destination (that
-  needs a callout). These limits are the Windows reason behind the cross-platform non-goals in the
-  parent doc.
 
 ## 4. Open problem: privileged enforcement downlevel (Tier 2) [DECISION OPEN]
 
@@ -229,8 +224,9 @@ GA and post-GA both depend on OS-owned primitives MXC should consume rather than
    `NetworkIsolationSetAppContainerConfig` (which also permits container-to-non-container traffic). The container-to-container scoping
    already exists in supported OS builds today; the GA ask is to **publicly document the API on
    learn.microsoft.com** so the downlevel (Tier 2) path can depend on it.
-3. **Feature-bitmap query** alongside `CreateProcessInSandbox` (see §2.1): pure-query, no-privilege,
-   one bit per *end-to-end-functional* policy capability, additive over time.
+3. **Companion query API** alongside `CreateProcessInSandbox` (see §2.1): a pure-query, no-privilege
+   way to enumerate the network features a build supports end-to-end (for example, a per-capability
+   bitmap), additive over time.
 
 ## 6. Open questions
 
