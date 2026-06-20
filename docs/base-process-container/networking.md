@@ -126,13 +126,13 @@ this backend, and it splits by Windows build:
 ### 2.1 Fail loud on version skew: never silently downgrade
 
 `CreateProcessInSandbox` is not a single build; its network-policy surface grows over time. A
-machine can expose the API but not yet honor a specific policy field MXC asks for. The SDK must
+machine can expose the API but not yet honor a specific policy field MXC asks for. MXC must
 **not** silently fall back to Tier 2 in that case: the two paths have different security and
 cleanup properties, and the operator would not know. The contract:
 
 - Fall back to Tier 2 only when the API is **absent on the build**, not when it is present but
   missing a requested field.
-- For a present-but-incomplete API, the SDK rejects the launch with a typed error **naming the
+- For a present-but-incomplete API, MXC rejects the launch with a typed error **naming the
   missing capability**.
 
 This requires an **OS feature-bitmap query** (one bit per policy capability) that ships with
