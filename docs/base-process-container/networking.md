@@ -135,7 +135,7 @@ cleanup properties, and the operator would not know. The contract:
 - For a present-but-incomplete API, MXC rejects the launch with a typed error **naming the
   missing capability**.
 
-This requires a **companion API alongside `CreateProcessInSandbox`** (see §5 #3) that, for example,
+This requires a **companion API alongside `CreateProcessInSandbox`** that, for example,
 lets MXC enumerate the network features the build actually supports. On Tier 2 the supported set is
 fixed (whatever the GA Tier 2 path implements), so only Tier 1 needs to query it.
 
@@ -162,8 +162,7 @@ filters only to outbound traffic from that one sandbox.
 > caveat under D2): the per-platform, per-technology elevation story is not solved here.
 
 **Problem.** Downlevel, the WFP and WinHTTP mutations that enforce GA policy need elevation, and
-per-launch UAC is unacceptable. "Run something elevated once" is easy; the hard part is the
-**trust model around it**:
+per-launch UAC is unacceptable.
 
 - **Should MXC own a privileged service at all?** A long-running MXC-owned elevated broker is one
   answer, but it is an always-on privileged attack surface and an ownership/servicing burden. Is
@@ -191,24 +190,18 @@ per-launch UAC is unacceptable. "Run something elevated once" is easy; the hard 
 | OS relaxes the WFP user-mode admin gate | no broker needed | long-shot networking-team ask; the admin gate is long-standing |
 
 **If the service route is chosen,** caller authentication is the load-bearing piece, and it is only
-*partially* answerable today. Candidate defenses bound the damage:
+*partially* answerable today. The candidate defenses bound the damage, but each has an open gap to
+close before GA, which is why the decision is open and not a finished design:
 
-- verify the caller's signed binary at IPC time;
-- expose a deliberately narrow API (add / remove / version only);
-- scope every filter to the caller-named container SID;
-- reject cross-caller teardown;
-- resolve no names, and expose no read/enumerate API.
-
-Known gaps remain to close before GA; these are *why the decision is open*, not a finished design:
-
-- TOCTOU between checking the on-disk image and the running image;
-- leaf-vs-root publisher pinning;
-- endpoint ACLs;
-- reliance on under-documented "PID from IPC" APIs.
-
-**Recommendation to reviewers:** prefer keeping privilege in the OS (Tier 1) and treating the
-downlevel elevation story as the separate MXC elevation design doc the parent doc already
-requires, rather than committing MXC to own a privileged networking broker. Open for discussion.
+| Candidate defense | Known gap to close before GA |
+|---|---|
+| Verify the caller's signed binary at IPC time | TOCTOU between the on-disk and running image; only the root, not the leaf publisher, is pinned |
+| Narrow API surface: add / remove / version only | none |
+| Scope every filter to the caller-named container SID | none |
+| Reject cross-caller teardown | none |
+| Resolve no names; expose no read/enumerate API | none |
+| Identify the caller from the IPC channel | relies on under-documented "PID from IPC" APIs |
+| ACL the IPC endpoint | not yet defined |
 
 ## 5. Open asks to the OS networking team
 
@@ -224,9 +217,6 @@ GA and post-GA both depend on OS-owned primitives MXC should consume rather than
    `NetworkIsolationSetAppContainerConfig` (which also permits container-to-non-container traffic). The container-to-container scoping
    already exists in supported OS builds today; the GA ask is to **publicly document the API on
    learn.microsoft.com** so the downlevel (Tier 2) path can depend on it.
-3. **Companion query API** alongside `CreateProcessInSandbox` (see §2.1): a pure-query, no-privilege
-   way to enumerate the network features a build supports end-to-end (for example, a per-capability
-   bitmap), additive over time.
 
 ## 6. Open questions
 
@@ -239,4 +229,3 @@ GA and post-GA both depend on OS-owned primitives MXC should consume rather than
 4. Per-launch container-SID uniqueness on Tier 2 (Tier 1 mints an ephemeral SID per launch;
    Tier 2 derives it from a caller-supplied id, so MXC must generate a unique per-launch profile
    name for crash-recovery reconciliation to rely on SID uniqueness).
-5. Inbound/listening policy: separate post-GA contract; must not be inferred from outbound.
