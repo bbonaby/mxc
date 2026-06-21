@@ -16,8 +16,7 @@ prompt per launch**:
 - **WFP outbound filters**: default-deny; allow/block by IP-literal/CIDR + transport + optional
   port (single or inclusive range), IPv4/IPv6 parity, explicit block beats allow. Scoped to the container SID.
 - **Per-container WinHTTP HTTP/S proxy**: points WinHTTP-stack clients (e.g. the WinHTTP/Chromium
-  stack) at a caller-provided loopback proxy container. The one app-aware path Windows gives us out
-  of the box.
+  stack) at a caller-provided loopback proxy container.
 
 ### 1.1 What `processcontainer` configures per connectivity model
 
@@ -102,8 +101,6 @@ Do not infer otherwise from the schema:
 - Encrypted-payload inspection.
 - Inbound/listening policy.
 
-The last four are cross-platform non-goals owned by the parent doc.
-
 ## 2. Two enforcement paths: current vs downlevel
 
 Both (a) WFP filter writes and (b) per-container WinHTTP proxy configuration require a
@@ -117,7 +114,7 @@ this backend, and it splits by Windows build:
   This is the preferred path and where new capability lands first.
 - **Tier 2: downlevel parity.** On builds without that API, MXC still owes the same GA policy. The
   enforcement primitives exist (container-scoped WFP, per-container WinHTTP), but applying them from
-  medium-IL `mxc-exec.exe` requires elevation, and prompting UAC on every sandbox launch is
+  medium-IL `wxc-exec.exe` requires elevation, and prompting UAC on every sandbox launch is
   unacceptable for an interactive agent workflow. **How to obtain that privilege downlevel without
   per-launch UAC is an open design problem (§4), not a settled mechanism.** Today MXC has neither a
   complete Tier 2 enforcement path nor a decided elevation story. It currently raises one UAC per
@@ -141,11 +138,14 @@ fixed (whatever the GA Tier 2 path implements), so only Tier 1 needs to query it
 
 ## 3. WFP is the enforcement primitive (both tiers)
 
-Outbound policy is enforced with WFP user-mode filters (`Fwpm*`) at
-`FWPM_LAYER_ALE_AUTH_CONNECT_V4` / `_V6` (the standard `connect()`-time authorization point),
-scoped to the sandbox via the `FWPM_CONDITION_ALE_PACKAGE_ID` (container SID) condition. The
-container SID is the per-sandbox identity available at filter-add time; Windows applies the
-filters only to outbound traffic from that one sandbox.
+Outbound policy is enforced with the **Windows Filtering Platform (WFP)**, the OS's built-in
+network-filtering engine. When the sandbox tries to open an outbound connection, the kernel checks
+MXC's filters and allows or blocks it. Each filter is scoped to the sandbox's container SID, so it
+applies only to that one sandbox and to nothing else on the machine.
+
+For readers familiar with WFP: the filters sit at the `FWPM_LAYER_ALE_AUTH_CONNECT_V4` / `_V6` layer
+(the `connect()`-time authorization point) and match on the `FWPM_CONDITION_ALE_PACKAGE_ID`
+(container SID) condition, the only per-sandbox identity available when a filter is added.
 
 - **Admin requirement.** Adding WFP filters is admin-only (the BFE engine access check). On Tier 1
   this is satisfied inside the OS service; on Tier 2 it is the open problem of §4.
@@ -156,8 +156,7 @@ filters only to outbound traffic from that one sandbox.
 
 ## 4. Open problem: privileged enforcement downlevel (Tier 2) [DECISION OPEN]
 
-> This section is deliberately a **problem statement with options, not a chosen design.** It needs
-> networking/security reviewer feedback before anything here is committed, and it overlaps the
+> This section is deliberately a **problem statement with options, not a chosen design.** It overlaps the
 > separate **MXC elevation design** prerequisite called out in the parent doc (the elevation
 > caveat under D2): the per-platform, per-technology elevation story is not solved here.
 
@@ -187,21 +186,6 @@ per-launch UAC is unacceptable.
 | COM elevation moniker | OS-mediated | still prompts; doesn't solve the medium-IL caller |
 | Long-running MXC service (e.g. restricted `LocalService` + local RPC) | no per-launch UAC | always-on privileged endpoint; **caller-auth is unsolved** (medium-IL spoof/TOCTOU); is owning a service even MXC's job? |
 | OS extends the Tier 1 in-process model downlevel | no MXC broker at all | OS-backport timeline; may not land for GA |
-| OS relaxes the WFP user-mode admin gate | no broker needed | long-shot networking-team ask; the admin gate is long-standing |
-
-**If the service route is chosen,** caller authentication is the load-bearing piece, and it is only
-*partially* answerable today. The candidate defenses bound the damage, but each has an open gap to
-close before GA, which is why the decision is open and not a finished design:
-
-| Candidate defense | Known gap to close before GA |
-|---|---|
-| Verify the caller's signed binary at IPC time | TOCTOU between the on-disk and running image; only the root, not the leaf publisher, is pinned |
-| Narrow API surface: add / remove / version only | none |
-| Scope every filter to the caller-named container SID | none |
-| Reject cross-caller teardown | none |
-| Resolve no names; expose no read/enumerate API | none |
-| Identify the caller from the IPC channel | relies on under-documented "PID from IPC" APIs |
-| ACL the IPC endpoint | not yet defined |
 
 ## 5. Open asks to the OS networking team
 
