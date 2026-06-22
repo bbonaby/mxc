@@ -1,6 +1,8 @@
 # Process Container Networking: Windows Implementation (GA)
 
-**Status:** draft for review · **Owner:** bbonaby · **Scope:** `processcontainer` backend only.
+Status: draft for review
+
+Owner: bbonaby
 
 > Implementation companion to the parent **MXC Network Configuration, GA** doc, which owns the
 > shared policy schema, the three connectivity models, and the GA goal (model 2, deny-all-except-
