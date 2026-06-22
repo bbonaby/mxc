@@ -15,8 +15,9 @@ Owner: bbonaby
 Each sandbox gets two enforcement primitives, scoped to its container SID and applied with **no UAC
 prompt per launch**:
 
-- **WFP outbound filters**: default-deny; allow/block by IP-literal/CIDR + transport + optional
-  port (single or inclusive range), IPv4/IPv6 parity, explicit block beats allow. Scoped to the container SID.
+- **WFP outbound filters**: block all outbound traffic by default, then allow or block specific
+  destinations by IP address or range, protocol, and port (a single port or a range), for both IPv4
+  and IPv6. An explicit block always wins over an allow, and the rules apply only to this sandbox.
 - **Per-container WinHTTP HTTP/S proxy**: points WinHTTP-stack clients (e.g. the WinHTTP/Chromium
   stack) at a caller-provided loopback proxy container.
 
