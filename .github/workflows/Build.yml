@@ -21,19 +21,29 @@ permissions:
   contents: read
 
 jobs:
+  # Parity gate: resolve the locked graph through the public MxcDependencies feed so a
+  # crate not yet in the feed fails at PR time (forks included, no secrets). The platform
+  # builds depend on it so a feed gap blocks the PR before burning build minutes.
+  cargo-feed-parity:
+    uses: ./.github/workflows/Cargo.Feed.Parity.Job.yml
+
   versioning-checks:
     uses: ./.github/workflows/Versioning.Checks.Job.yml
 
   lint:
+    needs: cargo-feed-parity
     uses: ./.github/workflows/Lint.Job.yml
 
   windows:
+    needs: cargo-feed-parity
     uses: ./.github/workflows/Build.Windows.Job.yml
 
   linux:
+    needs: cargo-feed-parity
     uses: ./.github/workflows/Build.Linux.Job.yml
 
   macos:
+    needs: cargo-feed-parity
     uses: ./.github/workflows/Build.MacOS.Job.yml
 
   sdk-unit-tests:

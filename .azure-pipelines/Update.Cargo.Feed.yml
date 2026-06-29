@@ -1,0 +1,61 @@
+# Updates the public shine-oss MxcDependencies feed from src/Cargo.lock using this
+# pipeline's own build identity (CargoAuthenticate / System.AccessToken).
+#
+# Two ways to run:
+#   - In-repo branch PR: comment `/azp run Update-Cargo-Feed` on the PR.
+#   - Fork PR: a maintainer runs the pipeline manually (Run pipeline at
+#     https://dev.azure.com/shine-oss/mxc/_build) and sets the `prNumber` parameter.
+
+parameters:
+  - name: prNumber
+    displayName: GitHub PR number to seed from a fork (blank = use the checked-out branch)
+    type: string
+    default: ''
+
+trigger: none
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - checkout: self
+    persistCredentials: true
+
+  # Fork seeding: overlay only the manifests + lockfile from the PR head onto the
+  # trusted checkout (keeping the trusted cargo config). The pipeline steps come from
+  # the trusted queued branch, and cargo fetch runs no build scripts, so no fork code
+  # executes. Review the PR's Cargo.lock first.
+  - ${{ if ne(parameters.prNumber, '') }}:
+    - script: |
+        set -euo pipefail
+        git fetch origin "pull/${{ parameters.prNumber }}/head"
+        git checkout FETCH_HEAD -- '*Cargo.toml' '*Cargo.lock'
+        echo "Overlaid manifests and Cargo.lock from PR #${{ parameters.prNumber }}"
+      displayName: Overlay manifests from PR #${{ parameters.prNumber }}
+
+  - script: |
+      mkdir -p src/.cargo
+      cat .azure-pipelines/.cargo/config.public.toml >> src/.cargo/config.toml
+    displayName: Point cargo at the MxcDependencies feed
+
+  - task: CargoAuthenticate@0
+    displayName: Authenticate to the feed
+    inputs:
+      configFile: src/.cargo/config.toml
+
+  # Authenticated fetch adds every locked .crate to the feed, for every target triple.
+  - script: |
+      set -euo pipefail
+      cd src
+      cargo fetch --locked \
+        --target x86_64-pc-windows-msvc \
+        --target aarch64-pc-windows-msvc \
+        --target x86_64-unknown-linux-gnu \
+        --target aarch64-unknown-linux-gnu \
+        --target aarch64-apple-darwin
+    displayName: Update feed via authenticated cargo fetch
